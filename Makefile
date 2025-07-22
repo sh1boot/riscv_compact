@@ -1,0 +1,2 @@
+run: measure.py
+	python ./$^

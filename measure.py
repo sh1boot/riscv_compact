@@ -141,6 +141,21 @@ class more:
         "subi4spn",
     }
 
+class cmp:
+    bits = 3
+    count = 8
+    display = ".cmp "
+    values = {
+        "clti",
+        "clei",
+        "cltui",
+        "cleui",
+        "clt",
+        "cle",
+        "cltu",
+        "cleu",
+    }
+
 class ldst:
     bits = 4
     count = 16
@@ -195,6 +210,10 @@ class SP:
     count = 1
 
 class RA:
+    bits = 0
+    count = 1
+
+class RT:
     bits = 0
     count = 1
 
@@ -320,6 +339,9 @@ my_attempt = {
     "ari,beqz,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm11 ],
     "ari,bnez,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm11 ],
 
+    "cmp,beqz,(rt)":    [ cmp, RT, rs, rs_imm,      BR, RD2RS, imm11 ],
+    "cmp,bnez,(rt)":    [ cmp, RT, rs, rs_imm,      BR, RD2RS, imm11 ],
+
     "ari,j":            [ full, rsd, rs_imm,        BR, imm10 ],
     "ari,jal":          [ full, rsd, rs_imm,        BR, RA, imm10 ],
 
@@ -333,7 +355,6 @@ my_attempt = {
     "div,rem":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
     "add,sub":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
     "and,bic":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
-    "--resv25":         [ imm10, imm10, imm5 ],
 
     "mem,mem,(rsimm)":  [ ldst, rd, rs, imm10,SHL,  BR, RDp1, RS2RS, IMMp1,SHL ],
 

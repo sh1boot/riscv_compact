@@ -56,6 +56,10 @@ class imm8:
     bits = 8
     count = 256
 
+class imm9:
+    bits = 8
+    count = 512
+
 class imm10:
     bits = 10
     count = 1024
@@ -106,8 +110,8 @@ class full:
         "srli1",
         "srai0",
         "srai1",
-        "rsbi0",  # or addiw0 ?
-        "rsbi1",  # or addiw1 ?
+        "rsbi0",
+        "rsbi1",
         "add",
         "addw",
         "sub",
@@ -124,6 +128,17 @@ class full:
         "??",
         "??",
         "??",
+    }
+
+class more:
+    bits = 2
+    count = 4
+    display = ".more  "
+    values = {
+        "addiw",
+        "subiw",
+        "addi4spn",
+        "subi4spn",
     }
 
 class ldst:
@@ -183,33 +198,35 @@ class RA:
     bits = 0
     count = 1
 
-class X0:
-    bits = 0
-    count = 1
-
 class RDp1:
     bits = 0
     count = 1
+    display = " =Rd+1"
 
 class RSp1:
     bits = 0
     count = 1
+    display = " =Rs+1"
 
 class RD2RS:
     bits = 0
     count = 1
+    display = " =Rd"
 
 class RS2RS:
     bits = 0
     count = 1
+    display = " =Rs"
 
 class RD2RSD:
     bits = 0
     count = 1
+    display = " =Rd"
 
 class RS2RSD:
     bits = 0
     count = 1
+    display = " =Rs"
 
 class IMMp1:
     bits = 0
@@ -297,26 +314,28 @@ my_attempt = {
     "ari,ari,(rd)":     [ full, rsd, rs_imm,        BR, full, RD2RSD, rs_imm ],
 
 # share Rs1 and Rs2/Imm
-    "ari,beqz":         [ set0, rsd, rs_imm,        BR, rs, imm6 ],
-    "ari,bnez":         [ set0, rsd, rs_imm,        BR, rs, imm6 ],
+    #"ari,beqz":         [ set0, rsd, rs_imm,        BR, rs, imm6 ],
+    #"ari,bnez":         [ set0, rsd, rs_imm,        BR, rs, imm6 ],
 
-    "ari,beqz,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm10 ],
-    "ari,bnez,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm10 ],
+    "ari,beqz,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm11 ],
+    "ari,bnez,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm11 ],
 
     "ari,j":            [ full, rsd, rs_imm,        BR, imm10 ],
     "ari,jal":          [ full, rsd, rs_imm,        BR, RA, imm10 ],
 
+    "ar2,jr":           [ more, rd, rs, imm5,       BR, rs ],
+    "ar2,jalr":         [ more, rd, rs, imm5,       BR, RA, rs ],
     "ari,jr":           [ full, rsd, rs_imm,        BR, rs ],
     "ari,jalr":         [ full, rsd, rs_imm,        BR, RA, rs ],
 
-    "--resv23":         [ imm10, imm8, imm5 ],
     "--resv21":         [ imm10, imm11 ],
     "mul,mulh":         [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
     "div,rem":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
     "add,sub":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
-    "--resv20":         [ imm10, imm10 ],
+    "and,bic":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "--resv25":         [ imm10, imm10, imm5 ],
 
-    "mem,mem":          [ ldst, rd, rs, imm10,SHL,  BR, RDp1, RS2RS, IMMp1,SHL ],
+    "mem,mem,(rsimm)":  [ ldst, rd, rs, imm10,SHL,  BR, RDp1, RS2RS, IMMp1,SHL ],
 
 # independent but loads have no offset (presumed calculated in adjacent op, but not mandatory)
     "ari,mem":          [ set0, rsd, rs_imm,SHL,    BR, ldst, rd, rs ],

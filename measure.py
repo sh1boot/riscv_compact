@@ -57,7 +57,7 @@ class imm8:
     count = 256
 
 class imm9:
-    bits = 8
+    bits = 9
     count = 512
 
 class imm10:
@@ -75,12 +75,12 @@ class set0:
     values = {
         "addi0",
         "addi1",
-        "subi0",
-        "subi1",
+        "addiw0",
+        "addi1w",
+        "addi04spn",
+        "addi14spn",
         "andi0",
         "andi1",
-        "bici0",
-        "bici1",
         "add",
         "addw",
         "sub",
@@ -98,12 +98,12 @@ class full:
     values = {
         "addi0",
         "addi1",
-        "subi0",
-        "subi1",
+        "addiw0",
+        "addiw1",
+        "add4i0spn",
+        "add4i1spn",
         "andi0",
         "andi1",
-        "bici0",
-        "bici1",
         "slli0",
         "slli1",
         "srli0",
@@ -124,21 +124,10 @@ class full:
         "mulh",
         "div",
         "rem",
+        "sll",
+        "srl",
+        "sra",
         "??",
-        "??",
-        "??",
-        "??",
-    }
-
-class more:
-    bits = 2
-    count = 4
-    display = ".more  "
-    values = {
-        "addiw",
-        "subiw",
-        "addi4spn",
-        "subi4spn",
     }
 
 class cmp:
@@ -146,14 +135,14 @@ class cmp:
     count = 8
     display = ".cmp "
     values = {
-        "clti",
-        "clei",
-        "cltui",
-        "cleui",
-        "clt",
-        "cle",
-        "cltu",
-        "cleu",
+        "slti0",
+        "slti1",
+        "slti0u",
+        "slti1u",
+        "seqi0",
+        "seqi1",
+        "bittesti0",  # andi, except the immediate is a bit index
+        "bittesti1",
     }
 
 class ldst:
@@ -213,7 +202,7 @@ class RA:
     bits = 0
     count = 1
 
-class RT:
+class T6:
     bits = 0
     count = 1
 
@@ -333,28 +322,29 @@ my_attempt = {
     "ari,ari,(rd)":     [ full, rsd, rs_imm,        BR, full, RD2RSD, rs_imm ],
 
 # share Rs1 and Rs2/Imm
-    #"ari,beqz":         [ set0, rsd, rs_imm,        BR, rs, imm6 ],
-    #"ari,bnez":         [ set0, rsd, rs_imm,        BR, rs, imm6 ],
-
     "ari,beqz,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm11 ],
     "ari,bnez,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm11 ],
 
-    "cmp,beqz,(rt)":    [ cmp, RT, rs, rs_imm,      BR, RD2RS, imm11 ],
-    "cmp,bnez,(rt)":    [ cmp, RT, rs, rs_imm,      BR, RD2RS, imm11 ],
+    "cmp,beqz,(rt)":    [ cmp, T6, rs, rs_imm,      BR, T6, imm11 ],
+    "cmp,bnez,(rt)":    [ cmp, T6, rs, rs_imm,      BR, T6, imm11 ],
 
     "ari,j":            [ full, rsd, rs_imm,        BR, imm10 ],
     "ari,jal":          [ full, rsd, rs_imm,        BR, RA, imm10 ],
 
-    "ar2,jr":           [ more, rd, rs, imm5,       BR, rs ],
-    "ar2,jalr":         [ more, rd, rs, imm5,       BR, RA, rs ],
     "ari,jr":           [ full, rsd, rs_imm,        BR, rs ],
     "ari,jalr":         [ full, rsd, rs_imm,        BR, RA, rs ],
 
-    "--resv21":         [ imm10, imm11 ],
-    "mul,mulh":         [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
-    "div,rem":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
-    "add,sub":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "--resv22":         [ imm11, imm11 ],
+    "add,sltu*":        [ rd, rs, rs,               BR, rd, RD2RS, RS2RS ],
     "and,bic":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "min,max":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "minu,maxu":        [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "add,sub":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "mul,mulhsu":       [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "mul,mulh":         [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "mul,mulhu":        [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "div,rem":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "divu,remu":        [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
 
     "mem,mem,(rsimm)":  [ ldst, rd, rs, imm10,SHL,  BR, RDp1, RS2RS, IMMp1,SHL ],
 

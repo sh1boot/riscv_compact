@@ -12,6 +12,10 @@ class rs:
     bits = 5
     count = 32
 
+class rs_nz:
+    bits = 5
+    count = 31
+
 class rs_imm:
     bits = 5
     count = 32
@@ -68,10 +72,25 @@ class imm11:
     bits = 11
     count = 2048
 
-class set0:
+class ari3:
+    bits = 3
+    count = 8
+    display = "th_a   "
+    values = {
+        "addi0",
+        "addi1",
+        "andi0",
+        "andi1",
+        "add",
+        "sub",
+        "and",
+        "or",
+    }
+
+class ari4:
     bits = 4
     count = 16
-    display = ".set0  "
+    display = "th_b   "
     values = {
         "addi0",
         "addi1",
@@ -91,10 +110,10 @@ class set0:
         "xor",
     }
 
-class full:
+class ari5:
     bits = 5
     count = 32
-    display = ".full  "
+    display = "th_c   "
     values = {
         "addi0",
         "addi1",
@@ -133,7 +152,7 @@ class full:
 class cmp:
     bits = 3
     count = 8
-    display = ".cmp "
+    display = ".cmp  "
     values = {
         "slti0",
         "slti1",
@@ -313,26 +332,26 @@ rvc = {
 
 my_attempt = {
 # no sharing
-    "ari,ari":          [ set0, rsd, rs_imm,        BR, set0, rsd, rs_imm ],
+    "ari,ari":          [ ari4, rsd, rs_imm,        BR, ari4, rsd, rs_imm ],
 
-# share Rs1:
-    "ari,ari,(rs)":     [ full, rsd, rs_imm,        BR, full, RS2RSD, rs_imm ],
+# share Rs2:
+    "ari,ari,(rs)":     [ ari5, rsd, rs_imm,        BR, ari5, rsd, RS2RS ],
 
-# forward Rd to Rs1
-    "ari,ari,(rd)":     [ full, rsd, rs_imm,        BR, full, RD2RSD, rs_imm ],
+# forward Rd to Rs2
+    "ari,ari,(rd)":     [ ari5, rsd, rs_imm,        BR, ari5, rsd, RD2RS ],
 
 # share Rs1 and Rs2/Imm
-    "ari,beqz,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm11 ],
-    "ari,bnez,(rd)":    [ set0, rsd, rs_imm,        BR, RD2RS, imm11 ],
+    "ari,beqz,(rd)":    [ ari4, rsd, rs_imm,        BR, RD2RS, imm11 ],
+    "ari,bnez,(rd)":    [ ari4, rsd, rs_imm,        BR, RD2RS, imm11 ],
 
-    "cmp,beqz,(rt)":    [ cmp, T6, rs, rs_imm,      BR, T6, imm11 ],
-    "cmp,bnez,(rt)":    [ cmp, T6, rs, rs_imm,      BR, T6, imm11 ],
+    "cmpi,beqz,(rt)":   [ cmp, T6, rs, rs_imm,      BR, T6, imm11 ],
+    "cmpi,bnez,(rt)":   [ cmp, T6, rs, rs_imm,      BR, T6, imm11 ],
 
-    "ari,j":            [ full, rsd, rs_imm,        BR, imm10 ],
-    "ari,jal":          [ full, rsd, rs_imm,        BR, RA, imm10 ],
+    "ari,j":            [ ari4, rsd, rs_imm,        BR, imm11 ],
+    "ari,jal":          [ ari4, rsd, rs_imm,        BR, RA, imm11 ],
 
-    "ari,jr":           [ full, rsd, rs_imm,        BR, rs ],
-    "ari,jalr":         [ full, rsd, rs_imm,        BR, RA, rs ],
+    "ari,jr":           [ ari5, rsd, rs_imm,        BR, rs ],
+    "ari,jalr":         [ ari5, rsd, rs_imm,        BR, RA, rs ],
 
     "--resv22":         [ imm11, imm11 ],
     "add,sltu*":        [ rd, rs, rs,               BR, rd, RD2RS, RS2RS ],
@@ -349,9 +368,49 @@ my_attempt = {
     "mem,mem,(rsimm)":  [ ldst, rd, rs, imm10,SHL,  BR, RDp1, RS2RS, IMMp1,SHL ],
 
 # independent but loads have no offset (presumed calculated in adjacent op, but not mandatory)
-    "ari,mem":          [ set0, rsd, rs_imm,SHL,    BR, ldst, rd, rs ],
-    "mem,ari":          [ ldst, rd, rs,             BR, set0, rsd, rs_imm,SHL ],
+    "ari,mem":          [ ari4, rsd, rs_imm,SHL,    BR, ldst, rd, rs ],
+    "mem,ari":          [ ldst, rd, rs,             BR, ari4, rsd, rs_imm,SHL ],
+}
+
+attempt2 = {
+    "ari,ari":          [ ari4, rsd, rs_imm,        BR, ari4, rsd, rs_imm ],
+    "ari,ari,(t6t6)":   [ ari4, T6, rs, rs_imm,     BR, ari4, rd, T6, rs_imm ],
+# share Rs2:
+    "ari,ari,(rs)":     [ ari5, rsd, rs_imm,        BR, ari5, rsd, RS2RS ],
+
+# forward Rd to Rs2
+    "ari,ari,(rd)":     [ ari5, rsd, rs_imm,        BR, ari5, rsd, RD2RS ],
+
+    "ari,beqz,(rd)":    [ ari4, rsd, rs_imm,        BR, RD2RS, imm11 ],
+    "ari,bnez,(rd)":    [ ari4, rsd, rs_imm,        BR, RD2RS, imm11 ],
+
+    "cmpi,beqz,(rt)":   [ cmp, T6, rs, rs_imm,      BR, T6, imm11 ],
+    "cmpi,bnez,(rt)":   [ cmp, T6, rs, rs_imm,      BR, T6, imm11 ],
+
+    "ari,j":            [ ari4, rsd, rs_imm,        BR, imm11 ],
+    "ari,jal":          [ ari4, rsd, rs_imm,        BR, RA, imm11 ],
+
+    "ari,jr":           [ ari5, rsd, rs_imm,        BR, rs ],
+    "ari,jalr":         [ ari5, rsd, rs_imm,        BR, RA, rs ],
+
+    "--resv22":         [ imm11, imm11 ],
+    "add,sltu*":        [ rd, rs, rs,               BR, rd, RD2RS, RS2RS ],
+    "and,bic":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "min,max":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "minu,maxu":        [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "add,sub":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "mul,mulhsu":       [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "mul,mulh":         [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "mul,mulhu":        [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "div,rem":          [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+    "divu,remu":        [ rd, rs, rs,               BR, rd, RS2RS, RS2RS ],
+
+    "mem,mem,(rsimm)":  [ ldst, rd, rs, imm10,SHL,  BR, RDp1, RS2RS, IMMp1,SHL ],
+
+    "ari,mem":          [ ari3, rsd, rs_imm,SHL,    BR, ldst, rd, rs ],
+    "mem,ari":          [ ldst, rd, rs,             BR, ari3, rsd, rs_imm,SHL ],
 }
 
 measure(rvc)
 measure(my_attempt)
+measure(attempt2)

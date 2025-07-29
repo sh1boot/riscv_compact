@@ -1,8 +1,9 @@
 import math
+import re
 
+LDST_format = "{opcode:<7} {rd}, {imm}({rs1})"
+LDSTSP_format = "{opcode:<7} {rd}, {imm}(SP)"
 formats = {
-    "nop": "nop",
-    "---": "--reserved--",
 #    "addi0":    "addi    {rd}, {rs1}, #{imm}",
 #    "addi04spn":"addi    {rd}, SP, #{imm}*4",
 #    "addi1":    "addi    {rd}, {rs1}, #{imm}-32",
@@ -27,34 +28,40 @@ formats = {
 #    "srli0":    "srli    {rd}, {rs1}, #{imm}",
 #    "srli1":    "srli    {rd}, {rs1}, #{imm}-32",
 
-    "bittesti0":"andi    {rd}, {rs1}, #1<<{rs_imm}",
-    "bittesti1":"andi    {rd}, {rs1}, #1<<{rs_imm}+32",
-    "beqz":     "beqz    {rs1}, +{imm}",
-    "bnez":     "bnez    {rs1}, +{imm}",
-    "j":        "j       +{imm}",
-    "jr":       "jr      {rs2}",
-    "jal":      "jal     {rd}, +{imm}",
-    "jalr":     "jalr    {rd}, {rs2}",
+#    "bittesti0":"andi    {rd}, {rs1}, #1<<{rs_imm}",
+#    "bittesti1":"andi    {rd}, {rs1}, #1<<{rs_imm}+32",
 
-    "ebreak":   "ebreak",
     "mv":       "mv      {rd}, {rs_imm}",
 
-    "lb":       "lb      {rd}, {imm}({rs1})",
-    "lh":       "lh      {rd}, {imm}*2({rs1})",
-    "lw":       "lw      {rd}, {imm}*4({rs1})",
-    "ld":       "ld      {rd}, {imm}*8({rs1})",
-    "lq":       "lq      {rd}, {imm}*4({rs1})",
-    "lbu":      "lbu     {rd}, {imm}({rs1})",
-    "lhu":      "lhu     {rd}, {imm}*2({rs1})",
-    "lwu/flw":  "lwu     {rd}, {imm}*4({rs1})",
-    "ldu/fld":  "ldu     {rd}, {imm}*8({rs1})",
-    "sb":       "sb      {rd}, {imm}({rs1})",
-    "sh":       "sh      {rd}, {imm}*2({rs1})",
-    "sw":       "sw      {rd}, {imm}*4({rs1})",
-    "sd":       "sd      {rd}, {imm}*8({rs1})",
-    "sq":       "sq      {rd}, {imm}*16({rs1})",
-    "fsd":      "fsd     {rd}, {imm}*16({rs1})",
-    "fsw":      "fsw     {rd}, {imm}*4({rs1})",
+    "lb":       LDST_format,
+    "lh":       LDST_format,
+    "lw":       LDST_format,
+    "ld":       LDST_format,
+    "lq":       LDST_format,
+    "lbu":      LDST_format,
+    "lhu":      LDST_format,
+    "lwu/flw":  LDST_format,
+    "ldu/fld":  LDST_format,
+    "lwu":      LDST_format,
+    "ldu":      LDST_format,
+    "flw":      LDST_format,
+    "fld":      LDST_format,
+    "sb":       LDST_format,
+    "sh":       LDST_format,
+    "sw":       LDST_format,
+    "sd":       LDST_format,
+    "sq":       LDST_format,
+    "fsd":      LDST_format,
+    "fsw":      LDST_format,
+
+
+    "fsdsp/sqsp":LDSTSP_format,
+    "swsp":     LDSTSP_format,
+    "fswsp/sdsp":LDSTSP_format,
+    "fld/lq":   LDST_format,
+    "flw/ld":   LDST_format,
+    "fsd/sq":   LDST_format,
+    "fsw/sd":   LDST_format,
 }
 
 class Opcode:
@@ -63,12 +70,18 @@ class Opcode:
     def __init__(self, op):
         assert isinstance(op, str), f"{op=}, {type(op)=}"
         self.name = op
+        self.re = self.name
         self.choices = [ self.name ]
+    def __str__(self):
+        return self.name
+    def __format__(self, spec):
+        return self.__str__().__format__(spec)
 
 
 class OpSet(Opcode):
     def __init__(self, name, *ops, roundoff=True):
         self.name = name
+        self.re = f"({'|'.join(ops)})"
         self.choices = ops
         self.count = len(self.choices)
         self.bits = (self.count - 1).bit_length()
@@ -81,7 +94,7 @@ class OpSet(Opcode):
         )
 
 
-def repack(*, rd=None, rs1=None, rsd=None, rs2=None, imm=None, rs_imm=None, shift=None):
+def repack(*, rd=None, rs1=None, rsd=None, rs2=None, imm=None, rs_imm=None, shift=None, **kwargs):
     if rs_imm: assert not (rs2 or imm)
     if rsd: assert not (rd or rs1)
     assert not (rs2 and imm)
@@ -94,36 +107,100 @@ def repack(*, rd=None, rs1=None, rsd=None, rs2=None, imm=None, rs_imm=None, shif
         'rs_imm': rs_imm or rs2 or imm,
         'shift': shift,
     }
-    return { k:v for k, v in d.items() if v }
+    kwargs.update({ k:v for k, v in d.items() if v })
+    return kwargs
 
 
 class Instruction:
-    def __init__(self, operation, fmt=None, **kwargs):
-        if isinstance(operation, str): operation = Opcode(operation)
-        assert isinstance(operation, (Opcode, OpSet)), f"op={operation}, {repr(operation)}"
-        self.operation = operation
-        bits = operation.bits
-        count = operation.count
+    def __init__(self, opcode, **kwargs):
+        if isinstance(opcode, str): opcode = Opcode(opcode)
+        assert isinstance(opcode, (Opcode, OpSet)), f"op={opcode}, {repr(opcode)}"
+        self.name = f"Instruction({opcode.name})"
+        self.opcode = opcode
+        bits = opcode.bits
+        count = opcode.count
+        arglist = []
         unique = set()
-        for k, v in repack(**kwargs).items():
-            setattr(self, k, v)
+        #for k, v in repack(**kwargs).items():
+        for k, v in kwargs.items():
+            if k == 'rsd':
+                arglist.append('rd')
+                arglist.append('rs1')
+                setattr(self, 'rd', v)
+                setattr(self, 'rs1', v)
+            else:
+                arglist.append(k)
+                setattr(self, k, v)
             unique.add(v)
         for v in unique:
             bits += v.bits
             count *= v.count
         self.bits = bits
         self.count = count
-        if fmt:
-            if hasattr(self, 'fmt'): print(f"replacing {self.fmt} with {fmt}")
-            self.fmt = fmt
-        elif not hasattr(self, 'fmt'):
-            self.fmt = formats.get(self.operation.name, f"{self.operation.name:<7} {{rd}}, {{rs1}}, {{rs_imm}}")
-    
+
+        if arglist:
+            comma = '}, {'
+            auto_fmt = f"{self.opcode.name:<7} {{{comma.join(arglist)}}}"
+            re_comma = r'\s*,\s*'
+            re_list = [ f"(?P<{k}>{getattr(self, k).re})" for k in arglist ]
+            auto_re = f"\\b(?P<opcode>{self.opcode.re})\\s+{re_comma.join(re_list)}"
+        else:
+            auto_fmt = f"{self.opcode.name}"
+            auto_re = f"{self.opcode.name}"
+
+        if hasattr(self, 'fmt'):
+            #print(f"{self.name} has explicit format: {self.fmt}")
+            #print(f"{self.name} ignores            : {auto_fmt}")
+            if self.fmt == auto_fmt:
+                print("** which is redundant")
+        elif self.opcode.name in formats:
+            #print(f"{self.name} has format from table: {formats[self.opcode.name]}")
+            #print(f"{self.name} ignores              : {auto_fmt}")
+            self.fmt = formats[self.opcode.name]
+            if self.fmt == auto_fmt:
+                print("** which is redundant")
+        else:
+            self.fmt = auto_fmt
+
+        if hasattr(self, 're'):
+            #print(f"{self.name} has explicit regex: {self.re}")
+            #print(f"{self.name} ignores           : {auto_re}")
+            if self.re == auto_re:
+                print("** which is redundant")
+        elif self.opcode.name in {}:
+            #print(f"{self.name} has regex from table: TBD")
+            #print(f"{self.name} ignores             : {auto_re}")
+            #self.re = TBD[self.opcode.name]
+            if self.re == auto_re:
+                print("** which is redundant")
+        else:
+            self.re = auto_re
+
+
+        self.re_prog = re.compile(self.re, re.ASCII)
+
     def __str__(self):
-        return self.fmt.format(**vars(self))
+        fmt_args = repack(**vars(self))
+        try:
+            return self.fmt.format(**fmt_args)
+        except Exception as e:
+            print(f"problem formatting: {self.fmt}, from: {fmt_args.keys()}")
+            raise e
+    def __format__(self, spec):
+        return self.__str__().__format__(spec)
+
+    def search(self, *args, **kwargs):
+        return self.re_prog.search(*args, **kwargs)
+    def match(self, *args, **kwargs):
+        return self.re_prog.match(*args, **kwargs)
+    def fullmatch(self, *args, **kwargs):
+        return self.re_prog.fullmatch(*args, **kwargs)
+    def sub(self, *args, **kwargs):
+        return self.re_prog.sub(*args, **kwargs)
 
 
 class Register:
+    re = r'\b(x[12]?\d|x3[01]|zero|ra|[sgtf]p|t[0-6]|s\d|s1[01]|a[0-7])\b'
     def __init__(self, name, count = 32):
         self.name = name
         self.count = count
@@ -131,13 +208,17 @@ class Register:
 
     def __str__(self):
         return self.name
+    def __format__(self, spec):
+        return self.__str__().__format__(spec)
 
 
 class Register3(Register):
+    re = r'\b(x[89]|x1[0-5]|fp|s[01]|a[0-5])\b'
     def __init__(self, name):
         super().__init__(name, 8)
 
 class Immediate:
+    re = r'[-+]?\d+\b'
     def __init__(self, size, name=None):
         self.name = name or f"imm{size}"
         self.bits = size
@@ -145,37 +226,39 @@ class Immediate:
 
     def __str__(self):
         return self.name
+    def __format__(self, spec):
+        return self.__str__().__format__(spec)
 
 
 class RegImm(Register, Immediate):
+    re = f'({Register.re}|{Immediate.re})'
     pass
 
 
 class ari3(Instruction):
-    operation = OpSet("ari3",
-        "addi0",
-        "addi1",
-        "subi0",
-        "subi1",
+    opcode = OpSet("arith3",
+        "addi",         # +0
+        "addi",         # +32
+        "subi",         # +0
+        "subi",         # +32
         "add",
         "sub",
         "and",
         "or",
     )
-    fmt = "arith3  {rd}, {rs1}, {rs_imm}"
     def __init__(self, **kwargs):
-        super().__init__(self.operation, **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 class ari4(Instruction):
-    operation = OpSet("arith4",
-        "addi0",
-        "addi1",
-        "addi0w",
-        "addi1w",
-        "addi04spn",
-        "addi14spn",
-        "andi0",
-        "andi1",
+    opcode = OpSet("arith4",
+        "addi",         # +0
+        "addi",         # -32
+        "addiw",        # +0
+        "addiw ",       # -32
+        "addi4spn",     # +0
+        "addi4spn",     # -32
+        "andi",         # +0
+        "andi",         # -32
         "add",
         "addw",
         "sub",
@@ -185,35 +268,33 @@ class ari4(Instruction):
         "or",
         "xor",
     )
-    fmt = "arith4  {rd}, {rs1}, {rs_imm}"
     def __init__(self, **kwargs):
-        super().__init__(self.operation, **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 class ari5i(Instruction):
-    operation = OpSet("arith5i",
-        "addi0",
-        "addi1",
-        "addi0w",
-        "addi1w",
-        "addi04spn",
-        "addi14spn",
-        "andi0",
-        "andi1",
-        "slli0",
-        "slli1",
-        "srli0",
-        "srli1",
-        "srai0",
-        "srai1",
-        "rsbi0",
-        "rsbi1",
+    opcode = OpSet("arith5i",
+        "addi",         # +0
+        "addi",         # -32
+        "addiw",        # +0
+        "addiw",        # -32
+        "addi4spn",     # +0
+        "addi4spn",     # -32
+        "andi",         # +0
+        "andi",         # -32
+        "slli",         # +0
+        "slli",         # +32
+        "srli",         # +0
+        "srli",         # +32
+        "srai",         # +0
+        "srai",         # +32
+        "rsbi",         # +0
+        "rsbi",         # +32
     )
-    fmt = "arith5i {rd}, {rs1}, {rs_imm}"
     def __init__(self, **kwargs):
-        super().__init__(self.operation, **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 class ari5r(Instruction):
-    operation = OpSet("arith5r",
+    opcode = OpSet("arith5r",
         "add",
         "addw",
         "sub",
@@ -229,42 +310,37 @@ class ari5r(Instruction):
         "sll",
         "srl",
         "sra",
-        "???",
     )
-    fmt = "arith5r {rd}, {rs1}, {rs2}"
     def __init__(self, **kwargs):
-        super().__init__(self.operation, **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 class ari5x(Instruction):
-    operation = ari5i.operation  # TODO: fix this.
-    fmt = "arith5x {rd}, {rs1}, {rs_imm}"
+    opcode = ari5i.opcode  # TODO: fix this.
     def __init__(self, **kwargs):
-        super().__init__(self.operation, **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 class ari5(Instruction):
-    operation = ari5i.operation | ari5r.operation
-    operation.name = "arith5"
-    fmt = "arith5  {rd}, {rs1}, {rs_imm}"
+    opcode = ari5i.opcode | ari5r.opcode
+    opcode.name = "arith5"
     def __init__(self, **kwargs):
-        super().__init__(self.operation, **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 class cmp(Instruction):
-    operation = OpSet("cmpi",
-        "slti0",
-        "slti1",
-        "slti0u",
-        "slti1u",
-        "seqi0",
-        "seqi1",
-        "bittesti0",
-        "bittesti1",
+    opcode = OpSet("cmpi",
+        "slti",         # +0
+        "slti",         # -32
+        "sltiu",        # +0
+        "sltiu",        # +32
+        "seqi",         # +0
+        "seqi",         # -32
+        "bittesti",     # +0
+        "bittesti",     # +32
     )
-    fmt = "cmpi    {rd}, {rs1}, {imm}"
     def __init__(self, **kwargs):
-        super().__init__(self.operation, **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 class ldst(Instruction):
-    operation = OpSet("ldst",
+    opcode = OpSet("ldst",
         "lb",
         "lh",
         "lw",
@@ -278,14 +354,15 @@ class ldst(Instruction):
 
         "lbu",
         "lhu",
-        "lwu/flw",
-        "ldu/fld",
+        "lwu",      # or "flw"
+        "fld",      # or "ldu"
         "fsw",
         "fsd",
     )
     fmt = "ldst    {rd}, {imm}({rs1})"
+    re = f"\\b(?P<opcode>{opcode.re})\\s+(?P<rd>{Register.re})\\s*,\\s*{Immediate.re}\\((?P<rs1>{Register.re})\\)"
     def __init__(self, **kwargs):
-        super().__init__(self.operation, **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 
 class pair(Instruction):
@@ -300,43 +377,51 @@ class pair(Instruction):
         ("mul", "mulhu"),
         ("div", "rem"),
         ("divu", "remu"),
-        ("???", "???"),
-        ("???", "???"),
+        ("undef_paira", "undef_pairb"),
+        ("undef_paira", "undef_pairb"),
     ]
-    operation = OpSet("pair.a", *[p[0] for p in opcode_pairs], roundoff=False)
-    print(f"{operation.count=}, {operation.bits=}, {len(operation.choices)=}, {operation.choices=}")
-    fmt = "pair.a  {rd}, {rs1}, {rs2}"
+    opcode = OpSet("pair.a", *[p[0] for p in opcode_pairs], roundoff=False)
     def __init__(self, **kwargs):
-        super().__init__(self.operation, **kwargs)
+        super().__init__(self.opcode, **kwargs)
+
+
+class Reserved(Instruction):
+    opcode = Opcode("--reserved--")
+    def __init__(self, bits, message=None):
+        super().__init__(self.opcode)
+        self.bits = bits
+        self.count = 1 << bits
+        self.fmt = message or "--reserved--"
 
 
 class ImplicitInstruction(Instruction):
-    def __init__(self, operation, **kwargs):
-        assert isinstance(operation, str)
-        super().__init__(operation, **kwargs)
+    def __init__(self, opcode, **kwargs):
+        assert isinstance(opcode, str)
+        super().__init__(opcode, **kwargs)
 
 
 class ImplicitRegister(Register):
     def __init__(self, name):
         super().__init__(name, 1)
+        self.re = name
 
 
 class ImplicitImmediate(Immediate):
     def __init__(self, name):
         super().__init__(0, name)
+        self.re = name
 
 
 class LDST(ImplicitInstruction):
-    fmt = "=LdSt   {rd}, {imm}*k({rs1})"
+    arglist = ( 'opcode', 'rd', 'imm', 'rs1' )
     def __init__(self, **kwargs):
         super().__init__("=LdSt", **kwargs)
 
 
 class PAIR(ImplicitInstruction):
-    #operation = OpSet("pair.b", *[p[1] for p in pair.opcode_pairs], roundoff=False)
-    fmt = "pair.b  {rd}, {rs1}, {rs2}"
+    #opcode = OpSet("pair.b", *[p[1] for p in pair.opcode_pairs], roundoff=False)
     def __init__(self, **kwargs):
-        super().__init__("=pair.b", **kwargs)
+        super().__init__("=Pair.B", **kwargs)
 
 
 ZERO = ImplicitRegister("ZERO")
@@ -409,6 +494,35 @@ def dump(instructions):
     print()
 
 
+
+def match_any(instructions, string):
+    for row in instructions:
+        for inst in row:
+            if match := inst.search(string):
+                #print(match.groupdict())
+                return match
+    return None
+
+def match(instructions, filename):
+    #for row in instructions:
+    #    for inst in row:
+    #        if match := inst.search("add a1, a2, a3"):
+    #            print(match.groupdict())
+    #        else:
+    #            print(f"non-matching op: {inst.fmt} re: {inst.re}")
+
+    hits = 0
+    misses = 0
+    with open(filename, "rt") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith('0x'):
+                hit = bool(match_any(instructions, line))
+                print(int(hit), line)
+                hits += int(hits)
+                misses += 1 - int(hits)
+        print(f"{hits=}, {misses=}")
+
 rvc = [
     # Q0
     ( Instruction("addi4spn",      rd=rd_3, rs1=SP, imm=imm8), ),
@@ -476,7 +590,7 @@ my_attempt = [
     ( ari5(rsd=rsd, rs_imm=rs_imm),             Instruction("jr", rs2=rs2), ),
     ( ari5(rsd=rsd, rs_imm=rs_imm),             Instruction("jalr", rd=RA, rs2=rs2), ),
 
-    ( Instruction("---", imm=imm21), ),
+    ( Reserved(21), ),
 
     ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
 
@@ -512,7 +626,7 @@ attempt2 = [
     ( Instruction("lw", rd=rd, rs1=SP, imm=imm8), ari5(rsd=REUSE("rd"), rs_imm=rs_imm), ),
     ( Instruction("ld", rd=rd, rs1=SP, imm=imm8), ari5(rsd=REUSE("rd"), rs_imm=rs_imm), ),
 
-    ( Instruction("---", imm=imm21), ),
+    ( Reserved(21), ),
 
     ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
 
@@ -525,3 +639,4 @@ attempt2 = [
 dump(rvc)
 dump(my_attempt)
 dump(attempt2)
+match(attempt2, "qemu-lite.txt")

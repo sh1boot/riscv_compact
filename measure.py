@@ -190,13 +190,20 @@ class Instruction:
         return self.__str__().__format__(spec)
 
     def search(self, *args, **kwargs):
-        return self.re_prog.search(*args, **kwargs)
-    def match(self, *args, **kwargs):
-        return self.re_prog.match(*args, **kwargs)
-    def fullmatch(self, *args, **kwargs):
-        return self.re_prog.fullmatch(*args, **kwargs)
-    def sub(self, *args, **kwargs):
-        return self.re_prog.sub(*args, **kwargs)
+        if not (match := self.re_prog.search(*args, **kwargs)):
+            return None
+        for k, v in match.groupdict().items():
+            validate = getattr(getattr(self, k), 'validate', None)
+            if validate and not validate(v):
+                return None
+        return match
+    def cook_re(self, match):
+        fmt_args = repack(**match.groupdict())
+        try:
+            return re.compile(self.re.format(**fmt_args), re.ASCII)
+        except KeyError as e:
+            print(f"Trouble with '{self.re} looking for {e} in {fmt_args}")
+        return None
 
 
 class Register:
@@ -359,8 +366,8 @@ class ldst(Instruction):
         "fsw",
         "fsd",
     )
-    fmt = "ldst    {rd}, {imm}({rs1})"
-    re = f"\\b(?P<opcode>{opcode.re})\\s+(?P<rd>{Register.re})\\s*,\\s*{Immediate.re}\\((?P<rs1>{Register.re})\\)"
+    fmt = "{opcode:<7} {rd}, {imm}({rs1})"
+    re = fr"\b(?P<opcode>{opcode.re})\s+(?P<rd>{Register.re})\s*,\s*(?P<imm>{Immediate.re})\((?P<rs1>{Register.re})\)"
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
@@ -414,6 +421,8 @@ class ImplicitImmediate(Immediate):
 
 class LDST(ImplicitInstruction):
     arglist = ( 'opcode', 'rd', 'imm', 'rs1' )
+    fmt = ldst.fmt
+    re = ldst.re
     def __init__(self, **kwargs):
         super().__init__("=LdSt", **kwargs)
 
@@ -473,55 +482,8 @@ imm23 = Immediate(23)
 
 class REUSE(ImplicitRegister):
     def __init__(self, src):
-        super().__init__(f"={src}")
+        super().__init__(f"{{{src}}}")
 
-
-def dump(instructions):
-    size = 0
-    for ops in instructions:
-        bits = 0
-        count = 1
-        display = []
-        for op in ops:
-            bits += op.bits
-            count *= op.count
-            display.append(f"{op.bits:2}: {str(op):<30}")
-
-        print(f"{size:#10x}{count:+#11x}: {"  ".join(display)}  ({bits:2} bits)")
-        size += count
-
-    print(f"total size: {size:#x},  bits: {(size - 1).bit_length()}")
-    print()
-
-
-
-def match_any(instructions, string):
-    for row in instructions:
-        for inst in row:
-            if match := inst.search(string):
-                #print(match.groupdict())
-                return match
-    return None
-
-def match(instructions, filename):
-    #for row in instructions:
-    #    for inst in row:
-    #        if match := inst.search("add a1, a2, a3"):
-    #            print(match.groupdict())
-    #        else:
-    #            print(f"non-matching op: {inst.fmt} re: {inst.re}")
-
-    hits = 0
-    misses = 0
-    with open(filename, "rt") as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith('0x'):
-                hit = bool(match_any(instructions, line))
-                print(int(hit), line)
-                hits += int(hits)
-                misses += 1 - int(hits)
-        print(f"{hits=}, {misses=}")
 
 rvc = [
     # Q0
@@ -630,13 +592,55 @@ attempt2 = [
 
     ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
 
-    ( ldst(rd=rd, rs1=rs1, imm=imm5,shift=SHL), LDST(rd=rd, rs1=REUSE("rs1"), imm=REUSE("Imm+1"), shift=SHL), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm5,shift=SHL), LDST(rd=rd, rs1=REUSE("rs1"), imm=REUSE("imm"), shift=SHL), ),
 
     ( ari3(rsd=rsd, rs_imm=rs_imm,shift=SHL),   ldst(rd=rd, rs1=rs1, imm=imm0), ),
     ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm,shift=SHL), ),
 ]
 
+
+def dump(instructions):
+    size = 0
+    for ops in instructions:
+        bits = 0
+        count = 1
+        display = []
+        for op in ops:
+            bits += op.bits
+            count *= op.count
+            display.append(f"{op.bits:2}: {str(op):<30}")
+
+        print(f"{size:#10x}{count:+#11x}: {"  ".join(display)}  ({bits:2} bits)")
+        size += count
+
+    print(f"total size: {size:#x},  bits: {(size - 1).bit_length()}")
+    print()
+
+
+
+def compress(instructions, filename):
+    saved = 0
+    total = 0
+    with open(filename, "rt") as f:
+        patterns = []
+        for line in f:
+            line = line.strip()
+            if not line.startswith('0x'):
+                continue
+
+            if any(map(lambda regex: regex.search(line), patterns)):
+                print("^", line)
+                patterns = []
+                saved += 1
+            else:
+                print(f"  all failed: {patterns}")
+                patterns = list(filter(None, [ row[1].cook_re(match) for row in instructions if (match := row[0].search(line)) ]))
+                print(len(patterns), line)
+            total += 1
+
+        print(f"{saved=}, {total=}")
+
 dump(rvc)
 dump(my_attempt)
 dump(attempt2)
-match(attempt2, "qemu-lite.txt")
+compress(attempt2, "qemu-lite.txt")

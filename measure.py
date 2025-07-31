@@ -1,76 +1,13 @@
 import math
 import re
 
-LDST_format = "{opcode:<7} {rd}, {imm}({rs1})"
-LDSTSP_format = "{opcode:<7} {rd}, {imm}(SP)"
-formats = {
-#    "addi0":    "addi    {rd}, {rs1}, #{imm}",
-#    "addi04spn":"addi    {rd}, SP, #{imm}*4",
-#    "addi1":    "addi    {rd}, {rs1}, #{imm}-32",
-#    "addi14spn":"addi    {rd}, SP, #{imm}*4+128",
-#    "addi14spn":"addi    {rd}, SP, #{imm}*4+256",
-#    "addi0w":   "addiw   {rd}, {rs1}, #{imm}",
-#    "addi1w":   "addiw   {rd}, {rs1}, #{imm}-32",
-#    "andi0":    "andi    {rd}, {rs1}, #{imm}",
-#    "andi1":    "andi    {rd}, {rs1}, #{imm}+32",
-#    "rsbi0":    "subi    {rd}, #{imm}, {rs1}",
-#    "rsbi1":    "subi    {rd}, #{imm}-32, {rs1}",
-#    "seqi0":    "slti    {rd}, {rs1}, #{rs_imm}",
-#    "seqi1":    "slti    {rd}, {rs1}, #{rs_imm}",
-#    "slli0":    "slli    {rd}, {rs1}, #{imm}",
-#    "slli1":    "slli    {rd}, {rs1}, #{imm}-32",
-#    "slti0":    "slti    {rd}, {rs1}, #{rs_imm}",
-#    "slti0u":   "slti    {rd}, {rs1}, #{rs_imm}",
-#    "slti1":    "slti    {rd}, {rs1}, #{rs_imm}+32",
-#    "slti1u":   "slti    {rd}, {rs1}, #{rs_imm}+32",
-#    "srai0":    "srai    {rd}, {rs1}, #{imm}",
-#    "srai1":    "srai    {rd}, {rs1}, #{imm}-32",
-#    "srli0":    "srli    {rd}, {rs1}, #{imm}",
-#    "srli1":    "srli    {rd}, {rs1}, #{imm}-32",
-
-#    "bittesti0":"andi    {rd}, {rs1}, #1<<{rs_imm}",
-#    "bittesti1":"andi    {rd}, {rs1}, #1<<{rs_imm}+32",
-
-    "mv":       "mv      {rd}, {rs_imm}",
-
-    "lb":       LDST_format,
-    "lh":       LDST_format,
-    "lw":       LDST_format,
-    "ld":       LDST_format,
-    "lq":       LDST_format,
-    "lbu":      LDST_format,
-    "lhu":      LDST_format,
-    "lwu/flw":  LDST_format,
-    "ldu/fld":  LDST_format,
-    "lwu":      LDST_format,
-    "ldu":      LDST_format,
-    "flw":      LDST_format,
-    "fld":      LDST_format,
-    "sb":       LDST_format,
-    "sh":       LDST_format,
-    "sw":       LDST_format,
-    "sd":       LDST_format,
-    "sq":       LDST_format,
-    "fsd":      LDST_format,
-    "fsw":      LDST_format,
-
-
-    "fsdsp/sqsp":LDSTSP_format,
-    "swsp":     LDSTSP_format,
-    "fswsp/sdsp":LDSTSP_format,
-    "fld/lq":   LDST_format,
-    "flw/ld":   LDST_format,
-    "fsd/sq":   LDST_format,
-    "fsw/sd":   LDST_format,
-}
-
 class Opcode:
     bits = 0
     count = 1
-    def __init__(self, op):
+    def __init__(self, op, aliases=()):
         assert isinstance(op, str), f"{op=}, {type(op)=}"
         self.name = op
-        self.re = self.name
+        self.re = self.name if not aliases else f"({'|'.join([op]+aliases)})"
         self.choices = [ self.name ]
     def __str__(self):
         return self.name
@@ -79,9 +16,9 @@ class Opcode:
 
 
 class OpSet(Opcode):
-    def __init__(self, name, *ops, roundoff=True):
+    def __init__(self, name, *ops, roundoff=True, aliases=()):
         self.name = name
-        self.re = f"({'|'.join(ops)})"
+        self.re = f"({'|'.join(ops+aliases)})"
         self.choices = ops
         self.count = len(self.choices)
         self.bits = (self.count - 1).bit_length()
@@ -148,34 +85,12 @@ class Instruction:
             auto_fmt = f"{self.opcode.name}"
             auto_re = f"{self.opcode.name}"
 
-        if hasattr(self, 'fmt'):
-            #print(f"{self.name} has explicit format: {self.fmt}")
-            #print(f"{self.name} ignores            : {auto_fmt}")
-            if self.fmt == auto_fmt:
-                print("** which is redundant")
-        elif self.opcode.name in formats:
-            #print(f"{self.name} has format from table: {formats[self.opcode.name]}")
-            #print(f"{self.name} ignores              : {auto_fmt}")
-            self.fmt = formats[self.opcode.name]
-            if self.fmt == auto_fmt:
-                print("** which is redundant")
-        else:
-            self.fmt = auto_fmt
+        if not hasattr(self, 'fmt'):
+            self.fmt = formats.get(self.opcode.name, auto_fmt)
 
-        if hasattr(self, 're'):
-            #print(f"{self.name} has explicit regex: {self.re}")
-            #print(f"{self.name} ignores           : {auto_re}")
-            if self.re == auto_re:
-                print("** which is redundant")
-        elif self.opcode.name in {}:
-            #print(f"{self.name} has regex from table: TBD")
-            #print(f"{self.name} ignores             : {auto_re}")
-            #self.re = TBD[self.opcode.name]
-            if self.re == auto_re:
-                print("** which is redundant")
-        else:
-            self.re = auto_re
-
+        if not hasattr(self, 're'):
+            self.re = regexps.get(self.opcode.name, auto_re)
+        self.re_nocapture = re.sub(r'\(\?P<\w+>', '(', self.re)
 
         self.re_prog = re.compile(self.re, re.ASCII)
 
@@ -193,16 +108,19 @@ class Instruction:
         if not (match := self.re_prog.search(*args, **kwargs)):
             return None
         for k, v in match.groupdict().items():
-            validate = getattr(getattr(self, k), 'validate', None)
+            validate = getattr(getattr(self, k, None), 'validate', None)
             if validate and not validate(v):
                 return None
         return match
     def cook_re(self, match):
         fmt_args = repack(**match.groupdict())
+        fmt_re = self.re_nocapture
         try:
-            return re.compile(self.re.format(**fmt_args), re.ASCII)
+            return re.compile(fmt_re.format(**fmt_args), re.ASCII)
         except KeyError as e:
-            print(f"Trouble with '{self.re} looking for {e} in {fmt_args}")
+            # I think this is probably OK, but might revisit.
+            print(f"Trouble with '{fmt_re} looking for {e} in {fmt_args}")
+            pass
         return None
 
 
@@ -239,8 +157,9 @@ class Immediate:
 
 class RegImm(Register, Immediate):
     re = f'({Register.re}|{Immediate.re})'
-    pass
-
+    def __init__(self, name, reg_name, imm_name='imm', count=32):
+        super().__init__(name, count)
+        re = fr'((?P<{reg_name}>{Register.re})|(?P<{imm_name}>{Immediate.re}))'
 
 class ari3(Instruction):
     opcode = OpSet("arith3",
@@ -318,11 +237,6 @@ class ari5r(Instruction):
         "srl",
         "sra",
     )
-    def __init__(self, **kwargs):
-        super().__init__(self.opcode, **kwargs)
-
-class ari5x(Instruction):
-    opcode = ari5i.opcode  # TODO: fix this.
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
@@ -446,7 +360,7 @@ rsd_nz = Register("rsd", 31)
 rs1 = Register("rs1")
 rs2 = Register("rs2")
 
-rs_imm = RegImm("rs_imm")
+rs_imm = RegImm("rs_imm", "rs2")
 rd_3 = Register3("rd")
 rsd_3 = Register3("rsd")
 rs1_3 = Register3("rs1")
@@ -483,6 +397,86 @@ imm23 = Immediate(23)
 class REUSE(ImplicitRegister):
     def __init__(self, src):
         super().__init__(f"{{{src}}}")
+
+def capture(name, value): return fr'(?P<{name}>{value})'
+def cap_obj(obj): return capture(obj.name, obj.re)
+def cap_opc(opc): return capture('opcode', opc)
+def cap_imm(): return capture('imm', r'[-+]?\d+')
+
+LDST_regex = fr"{cap_obj(ldst.opcode)}\s+{cap_obj(rd)}\s*,\s*{cap_imm()}\({cap_obj(rs1)}\)"
+LDSTSP_regex = fr"{cap_obj(ldst.opcode)}\s+{cap_obj(rd)}\s*,\s*{cap_imm()}\(sp\)"
+
+LDST_format = "{opcode:<7} {rd}, {imm}({rs1})"
+LDSTSP_format = "{opcode:<7} {rd}, {imm}(sp)"
+formats = {
+    "mv":       "{opcode:<7} {rd}, {rs_imm}",
+
+    "lb":       LDST_format,
+    "lh":       LDST_format,
+    "lw":       LDST_format,
+    "ld":       LDST_format,
+    "lq":       LDST_format,
+    "lbu":      LDST_format,
+    "lhu":      LDST_format,
+    "lwu/flw":  LDST_format,
+    "ldu/fld":  LDST_format,
+    "lwu":      LDST_format,
+    "ldu":      LDST_format,
+    "flw":      LDST_format,
+    "fld":      LDST_format,
+    "sb":       LDST_format,
+    "sh":       LDST_format,
+    "sw":       LDST_format,
+    "sd":       LDST_format,
+    "sq":       LDST_format,
+    "fsd":      LDST_format,
+    "fsw":      LDST_format,
+
+
+    "fsdsp/sqsp":LDSTSP_format,
+    "swsp":     LDSTSP_format,
+    "fswsp/sdsp":LDSTSP_format,
+    "fld/lq":   LDST_format,
+    "flw/ld":   LDST_format,
+    "fsd/sq":   LDST_format,
+    "fsw/sd":   LDST_format,
+}
+
+regexps = {
+    "mv":       fr"{cap_opc('mv')}\s+{cap_obj(rsd)}\s*,\s*{cap_obj(rs_imm)}",
+
+    "lb":       LDST_regex,
+    "lh":       LDST_regex,
+    "lw":       LDST_regex,
+    "ld":       LDST_regex,
+    "lq":       LDST_regex,
+    "lbu":      LDST_regex,
+    "lhu":      LDST_regex,
+    "lwu/flw":  LDST_regex,
+    "ldu/fld":  LDST_regex,
+    "lwu":      LDST_regex,
+    "ldu":      LDST_regex,
+    "flw":      LDST_regex,
+    "fld":      LDST_regex,
+    "sb":       LDST_regex,
+    "sh":       LDST_regex,
+    "sw":       LDST_regex,
+    "sd":       LDST_regex,
+    "sq":       LDST_regex,
+    "fsd":      LDST_regex,
+    "fsw":      LDST_regex,
+
+
+    "fsdsp/sqsp":LDSTSP_regex,
+    "swsp":     LDSTSP_regex,
+    "fswsp/sdsp":LDSTSP_regex,
+    "fld/lq":   LDST_regex,
+    "flw/ld":   LDST_regex,
+    "fsd/sq":   LDST_regex,
+    "fsw/sd":   LDST_regex,
+}
+
+
 
 
 rvc = [
@@ -535,10 +529,12 @@ my_attempt = [
     ( ari4(rsd=rsd, rs_imm=rs_imm),             ari4(rsd=rsd, rs_imm=rs_imm), ),
     ( ari4(rd=T6, rs1=rs1, rs_imm=rs_imm),      ari4(rd=rd, rs1=T6, rs_imm=rs_imm), ),
 # share Rs2:
-    ( ari5(rsd=rsd, rs_imm=rs_imm),             ari5x(rsd=rsd, rs2=REUSE("rs2")), ),
+    ( ari5i(rsd=rsd, imm=imm5),                 ari5i(rsd=rsd, imm=REUSE("imm")), ),
+    ( ari5r(rsd=rsd, rs2=rs2),                  ari5r(rsd=rsd, rs2=REUSE("rs2")), ),
 
 # forward Rd to Rs2
-    ( ari5(rsd=rsd, rs_imm=rs_imm),             ari5x(rsd=rsd, rs2=REUSE("rd")), ),
+    ( ari5i(rsd=rsd, imm=imm5),                 ari5r(rsd=rsd, rs2=REUSE("rd")), ),  # WUT?
+    ( ari5r(rsd=rsd, rs2=rs2),                  ari5r(rsd=rsd, rs2=REUSE("rd")), ),
 
     ( ari4(rsd=rsd, rs_imm=rs_imm),             Instruction("beqz", rs1=REUSE("rd"), imm=imm11), ),
     ( ari4(rsd=rsd, rs_imm=rs_imm),             Instruction("bnez", rs1=REUSE("rd"), imm=imm11), ),
@@ -566,10 +562,12 @@ attempt2 = [
     ( ari4(rsd=rsd, rs_imm=rs_imm),             ari4(rsd=rsd, rs_imm=rs_imm), ),
     ( ari4(rd=T6, rs1=rs1, rs_imm=rs_imm),      ari4(rd=rd, rs1=T6, rs_imm=rs_imm), ),
 # share Rs2:
-    ( ari5(rsd=rsd, rs_imm=rs_imm),             ari5x(rsd=rsd, rs2=REUSE("rs2")), ),
+    ( ari5i(rsd=rsd, imm=imm5),                 ari5i(rsd=rsd, imm=REUSE("imm")), ),
+    ( ari5r(rsd=rsd, rs2=rs2),                  ari5r(rsd=rsd, rs2=REUSE("rs2")), ),
 
 # forward Rd to Rs2
-    ( ari5(rsd=rsd, rs_imm=rs_imm),             ari5x(rsd=rsd, rs2=REUSE("rd")), ),
+    ( ari5i(rsd=rsd, imm=imm5),                 ari5r(rsd=rsd, rs2=REUSE("rd")), ),  # WUT?
+    ( ari5r(rsd=rsd, rs2=rs2),                  ari5r(rsd=rsd, rs2=REUSE("rd")), ),
 
     ( ari4(rsd=rsd, rs_imm=rs_imm),             Instruction("beqz", rs1=REUSE("rd"), imm=imm11), ),
     ( ari4(rsd=rsd, rs_imm=rs_imm),             Instruction("bnez", rs1=REUSE("rd"), imm=imm11), ),
@@ -617,6 +615,24 @@ def dump(instructions):
     print()
 
 
+def first_line(instructions, line):
+    return filter(None, ( row[1].cook_re(match) for row in instructions if (match := row[0].search(line)) ))
+
+
+def next_line(patterns, line):
+    return next((m for r in patterns if (m := r.search(line))), None)
+
+
+def try_pair(instructions, line0, line1):
+    patterns = tuple(first_line(instructions, line0))
+    print("input0:", line0)
+    for pat in patterns:
+        print(pat)
+
+    print("\ninput1:", line1)
+    match = next_line(patterns, line1)
+    print(match)
+
 
 def compress(instructions, filename):
     saved = 0
@@ -626,16 +642,20 @@ def compress(instructions, filename):
         for line in f:
             line = line.strip()
             if not line.startswith('0x'):
+                print('#', line)
                 continue
 
-            if any(map(lambda regex: regex.search(line), patterns)):
-                print("^", line)
+            match = next_line(patterns, line)
+            if match:
+                print("^^", line)
                 patterns = []
                 saved += 1
             else:
-                print(f"  all failed: {patterns}")
-                patterns = list(filter(None, [ row[1].cook_re(match) for row in instructions if (match := row[0].search(line)) ]))
-                print(len(patterns), line)
+                failed_patterns = patterns
+                patterns = tuple(first_line(instructions, line))
+                print(f"{len(patterns):2} {line}")
+                #if failed_patterns:
+                #    print(f"  (all failed: {failed_patterns})")
             total += 1
 
         print(f"{saved=}, {total=}")
@@ -643,4 +663,6 @@ def compress(instructions, filename):
 dump(rvc)
 dump(my_attempt)
 dump(attempt2)
+try_pair(attempt2, " slli a4,a1,48", " srli a4,a4,48")
+
 compress(attempt2, "qemu-lite.txt")

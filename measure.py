@@ -1,34 +1,121 @@
 import math
 import re
 
+LDST_regex = r"\b{opcode}\s+{rd},\s*{imm}[(]{rs1}[)]"
+LDSTSP_regex = r"\b{opcode}\s+{rd},\s*{imm}[(]sp[)]"
+REG_regex = r'zero|[astx][0123]?\d|[sgtf]p|ra'
+IMM_regex = r'[-+]\d+'
+
+LDST_format = "{opcode:<7} {rd},{imm}({rs1})"
+LDSTSP_format = "{opcode:<7} {rd},{imm}(sp)"
+formats = {
+    "mv":       "{opcode:<7} {rd},{rs_imm}",
+
+    "lb":       LDST_format,
+    "lh":       LDST_format,
+    "lw":       LDST_format,
+    "ld":       LDST_format,
+    "lq":       LDST_format,
+    "lbu":      LDST_format,
+    "lhu":      LDST_format,
+    "lwu/flw":  LDST_format,
+    "ldu/fld":  LDST_format,
+    "lwu":      LDST_format,
+    "ldu":      LDST_format,
+    "flw":      LDST_format,
+    "fld":      LDST_format,
+    "sb":       LDST_format,
+    "sh":       LDST_format,
+    "sw":       LDST_format,
+    "sd":       LDST_format,
+    "sq":       LDST_format,
+    "fsd":      LDST_format,
+    "fsw":      LDST_format,
+
+
+    "fsdsp/sqsp":LDSTSP_format,
+    "swsp":     LDSTSP_format,
+    "fswsp/sdsp":LDSTSP_format,
+    "fld/lq":   LDST_format,
+    "flw/ld":   LDST_format,
+    "fsd/sq":   LDST_format,
+    "fsw/sd":   LDST_format,
+}
+
+regexps = {
+    "mv":       r"{opcode}\s+{rd},{rs_imm}",
+
+    "lb":       LDST_regex,
+    "lh":       LDST_regex,
+    "lw":       LDST_regex,
+    "ld":       LDST_regex,
+    "lq":       LDST_regex,
+    "lbu":      LDST_regex,
+    "lhu":      LDST_regex,
+    "lwu/flw":  LDST_regex,
+    "ldu/fld":  LDST_regex,
+    "lwu":      LDST_regex,
+    "ldu":      LDST_regex,
+    "flw":      LDST_regex,
+    "fld":      LDST_regex,
+    "sb":       LDST_regex,
+    "sh":       LDST_regex,
+    "sw":       LDST_regex,
+    "sd":       LDST_regex,
+    "sq":       LDST_regex,
+    "fsd":      LDST_regex,
+    "fsw":      LDST_regex,
+
+
+    "fsdsp/sqsp":LDSTSP_regex,
+    "swsp":     LDSTSP_regex,
+    "fswsp/sdsp":LDSTSP_regex,
+    "fld/lq":   LDST_regex,
+    "flw/ld":   LDST_regex,
+    "fsd/sq":   LDST_regex,
+    "fsw/sd":   LDST_regex,
+}
+
+
+unaliases = {
+    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<rs2>{REG_regex})":   r"add     \g<rd>,zero,\g<rs2>",
+    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<imm>{IMM_regex})":   r"addi    \g<rd>,zero,\g<imm>",
+    r"\bret\b":   "jr      ra",
+}
+
 class Opcode:
     bits = 0
     count = 1
-    def __init__(self, op, aliases=()):
-        assert isinstance(op, str), f"{op=}, {type(op)=}"
-        self.name = op
-        self.re = self.name if not aliases else f"({'|'.join([op]+aliases)})"
-        self.choices = [ self.name ]
+
+    name = "generic name"
+    def __init__(self, name, opcodes=(), roundoff=True, aliases=()):
+        self.name = name
+        self.choices = opcodes or (name,)
+        self.count = len(self.choices)
+        self.aliases = set(self.choices) | set(aliases)
+        self.bits = (self.count - 1).bit_length()
+        if roundoff:
+            self.count = 1 << self.bits
+        self.re = f"{'|'.join(self.aliases)}"
+
     def __str__(self):
         return self.name
     def __format__(self, spec):
         return self.__str__().__format__(spec)
-
-
-class OpSet(Opcode):
-    def __init__(self, name, *ops, roundoff=True, aliases=()):
-        self.name = name
-        self.re = f"({'|'.join(ops+aliases)})"
-        self.choices = ops
-        self.count = len(self.choices)
-        self.bits = (self.count - 1).bit_length()
-        if roundoff: self.count = 1 << self.bits
-
     def __or__(self, other):
-        return OpSet(
-                "|".join((self.name, other.name)),
-                *(set(self.choices) | set(other.choices)),
+        return Opcode(
+                name="|".join((self.name, other.name)),
+                opcodes=(set(self.choices) | set(other.choices)),
+                aliases=(self.aliases | other.aliases)
         )
+
+    def parse(self, string, tweak=False):
+        if string not in self.aliases:
+            return None
+        if tweak and hasattr(self, 'opcode_pairs'):
+            # TODO: something.  Including making up multiple matches for the mul/* pairs.
+            pass
+        return Opcode(string)
 
 
 def repack(*, rd=None, rs1=None, rsd=None, rs2=None, imm=None, rs_imm=None, shift=None, **kwargs):
@@ -51,14 +138,13 @@ def repack(*, rd=None, rs1=None, rsd=None, rs2=None, imm=None, rs_imm=None, shif
 class Instruction:
     def __init__(self, opcode, **kwargs):
         if isinstance(opcode, str): opcode = Opcode(opcode)
-        assert isinstance(opcode, (Opcode, OpSet)), f"op={opcode}, {repr(opcode)}"
-        self.name = f"Instruction({opcode.name})"
+        assert isinstance(opcode, Opcode), f"op={opcode}, {repr(opcode)}"
+        self.name = f"Instruction('{opcode.name}')"
         self.opcode = opcode
         bits = opcode.bits
         count = opcode.count
         arglist = []
         unique = set()
-        #for k, v in repack(**kwargs).items():
         for k, v in kwargs.items():
             if k == 'rsd':
                 arglist.append('rd')
@@ -76,11 +162,10 @@ class Instruction:
         self.count = count
 
         if arglist:
-            comma = '}, {'
+            comma = '},{'
             auto_fmt = f"{self.opcode.name:<7} {{{comma.join(arglist)}}}"
-            re_comma = r'\s*,\s*'
-            re_list = [ f"(?P<{k}>{getattr(self, k).re})" for k in arglist ]
-            auto_re = f"\\b(?P<opcode>{self.opcode.re})\\s+{re_comma.join(re_list)}"
+            re_comma = r'},\s*{'
+            auto_re = fr"\b{{opcode}}\s+{{{re_comma.join(arglist)}}}"
         else:
             auto_fmt = f"{self.opcode.name}"
             auto_re = f"{self.opcode.name}"
@@ -90,8 +175,19 @@ class Instruction:
 
         if not hasattr(self, 're'):
             self.re = regexps.get(self.opcode.name, auto_re)
-        self.re_nocapture = re.sub(r'\(\?P<\w+>', '(', self.re)
 
+        def capture_fmt(fmt, **kwargs):
+            expanded = { k: f"(?P<{k}>{v.re})" for k,v in kwargs.items() }
+            return fmt.format(**expanded)
+
+        def no_capture_fmt(fmt, **kwargs):
+            expanded = { k: f"({v.re})" for k,v in kwargs.items() }
+            return fmt.format(**expanded)
+
+
+        self.re_nocapture = no_capture_fmt(self.re, opcode=self.opcode, **repack(**kwargs))
+        self.re = capture_fmt(self.re, opcode=self.opcode, **repack(**kwargs))
+        print(self.re)
         self.re_prog = re.compile(self.re, re.ASCII)
 
     def __str__(self):
@@ -112,8 +208,8 @@ class Instruction:
             if validate and not validate(v):
                 return None
         return match
-    def cook_re(self, match):
-        fmt_args = repack(**match.groupdict())
+    def re_cook(self, fmt_args):
+        fmt_args = repack(**fmt_args)
         fmt_re = self.re_nocapture
         try:
             return re.compile(fmt_re.format(**fmt_args), re.ASCII)
@@ -125,20 +221,44 @@ class Instruction:
 
 
 class Register:
-    re = r'\b(x[12]?\d|x3[01]|zero|ra|[sgtf]p|t[0-6]|s\d|s1[01]|a[0-7])\b'
+    choices = (
+        "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
+        "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+        "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
+        "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
+    )
+    aliases = set(choices) | {
+        "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+        "x8", "fp", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+        "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
+        "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31",
+    }
+    #re = '|'.join(aliases)
+    re = REG_regex
     def __init__(self, name, count = 32):
         self.name = name
         self.count = count
         self.bits = (self.count - 1).bit_length()
+        if count == 1:
+            self.choices = { name }
+            self.aliases = self.choices  # TODO: look up correct aliases
+            self.re = name
 
     def __str__(self):
         return self.name
     def __format__(self, spec):
         return self.__str__().__format__(spec)
 
+    def parse(self, string, tweak=False):
+        if string not in self.aliases:
+            return None
+        return Register(string, 1)
+
 
 class Register3(Register):
-    re = r'\b(x[89]|x1[0-5]|fp|s[01]|a[0-5])\b'
+    choices = ( "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5", )
+    aliases = set(choices) | { "x8", "fp", "x9", "x10", "x11", "x12", "x13", "x14", "x15", }
+    re = '|'.join(aliases)
     def __init__(self, name):
         super().__init__(name, 8)
 
@@ -154,15 +274,44 @@ class Immediate:
     def __format__(self, spec):
         return self.__str__().__format__(spec)
 
+    def parse(self, string, tweak=False):
+        try:
+            value = int(string)
+        except ValueError:
+            return None
+
+        # TODO: get proper value of k and signed
+        k = 16
+        signed = True
+
+        range_ = k << self.bits
+        if signed:
+            if not (-range_ // 2 <= value and value < range_ // 2):
+                return None
+        else:
+            if not (0 <= value and value < range_):
+                return None
+        # if value % k != 0:
+        #    return False
+
+        retval = Immediate(size=0, name=string)
+        retval.re = str(value)
+        if tweak: retval.re += fr"|{str(value+k)}|{str(value-k)}"
+        return retval
+
 
 class RegImm(Register, Immediate):
-    re = f'({Register.re}|{Immediate.re})'
+    re = f'{Register.re}|{Immediate.re}'
     def __init__(self, name, reg_name, imm_name='imm', count=32):
         super().__init__(name, count)
         re = fr'((?P<{reg_name}>{Register.re})|(?P<{imm_name}>{Immediate.re}))'
 
+    def parse(self, string, tweak=False):
+        return (Register.parse(self, string, tweak) or
+                Immediate.parse(self, string, tweak))
+
 class ari3(Instruction):
-    opcode = OpSet("arith3",
+    opcode = Opcode("arith3", (
         "addi",         # +0
         "addi",         # +32
         "subi",         # +0
@@ -171,16 +320,16 @@ class ari3(Instruction):
         "sub",
         "and",
         "or",
-    )
+    ))
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
 class ari4(Instruction):
-    opcode = OpSet("arith4",
+    opcode = Opcode("arith4", (
         "addi",         # +0
         "addi",         # -32
         "addiw",        # +0
-        "addiw ",       # -32
+        "addiw",        # -32
         "addi4spn",     # +0
         "addi4spn",     # -32
         "andi",         # +0
@@ -193,12 +342,12 @@ class ari4(Instruction):
         "bic",
         "or",
         "xor",
-    )
+    ))
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
 class ari5i(Instruction):
-    opcode = OpSet("arith5i",
+    opcode = Opcode("arith5i", (
         "addi",         # +0
         "addi",         # -32
         "addiw",        # +0
@@ -215,12 +364,12 @@ class ari5i(Instruction):
         "srai",         # +32
         "rsbi",         # +0
         "rsbi",         # +32
-    )
+    ))
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
 class ari5r(Instruction):
-    opcode = OpSet("arith5r",
+    opcode = Opcode("arith5r", (
         "add",
         "addw",
         "sub",
@@ -236,7 +385,8 @@ class ari5r(Instruction):
         "sll",
         "srl",
         "sra",
-    )
+# TODO: find space for "mv"?  It'll be partially redundant with some other shared operand cases -- could be messy.
+    ))
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
@@ -247,7 +397,7 @@ class ari5(Instruction):
         super().__init__(self.opcode, **kwargs)
 
 class cmp(Instruction):
-    opcode = OpSet("cmpi",
+    opcode = Opcode("cmpi", (
         "slti",         # +0
         "slti",         # -32
         "sltiu",        # +0
@@ -256,12 +406,12 @@ class cmp(Instruction):
         "seqi",         # -32
         "bittesti",     # +0
         "bittesti",     # +32
-    )
+    ))
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
 class ldst(Instruction):
-    opcode = OpSet("ldst",
+    opcode = Opcode("ldst", (
         "lb",
         "lh",
         "lw",
@@ -279,9 +429,9 @@ class ldst(Instruction):
         "fld",      # or "ldu"
         "fsw",
         "fsd",
-    )
-    fmt = "{opcode:<7} {rd}, {imm}({rs1})"
-    re = fr"\b(?P<opcode>{opcode.re})\s+(?P<rd>{Register.re})\s*,\s*(?P<imm>{Immediate.re})\((?P<rs1>{Register.re})\)"
+    ))
+    fmt = LDST_format
+    re = LDST_regex
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
@@ -301,7 +451,7 @@ class pair(Instruction):
         ("undef_paira", "undef_pairb"),
         ("undef_paira", "undef_pairb"),
     ]
-    opcode = OpSet("pair.a", *[p[0] for p in opcode_pairs], roundoff=False)
+    opcode = Opcode("pair.a", tuple(p[0] for p in opcode_pairs), roundoff=False)
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
@@ -317,7 +467,6 @@ class Reserved(Instruction):
 
 class ImplicitInstruction(Instruction):
     def __init__(self, opcode, **kwargs):
-        assert isinstance(opcode, str)
         super().__init__(opcode, **kwargs)
 
 
@@ -334,23 +483,23 @@ class ImplicitImmediate(Immediate):
 
 
 class LDST(ImplicitInstruction):
-    arglist = ( 'opcode', 'rd', 'imm', 'rs1' )
+    opcode = Opcode("{opcode}")
     fmt = ldst.fmt
     re = ldst.re
     def __init__(self, **kwargs):
-        super().__init__("=LdSt", **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 
 class PAIR(ImplicitInstruction):
-    #opcode = OpSet("pair.b", *[p[1] for p in pair.opcode_pairs], roundoff=False)
+    #opcode = Opcode("pair.b", tuple(p[1] for p in pair.opcode_pairs), roundoff=False)
     def __init__(self, **kwargs):
         super().__init__("=Pair.B", **kwargs)
 
 
-ZERO = ImplicitRegister("ZERO")
-RA = ImplicitRegister("RA")
-SP = ImplicitRegister("SP")
-T6 = ImplicitRegister("T6")
+ZERO = ImplicitRegister("zero")
+RA = ImplicitRegister("ra")
+SP = ImplicitRegister("sp")
+T6 = ImplicitRegister("t6")
 
 
 rd = Register("rd")
@@ -397,86 +546,6 @@ imm23 = Immediate(23)
 class REUSE(ImplicitRegister):
     def __init__(self, src):
         super().__init__(f"{{{src}}}")
-
-def capture(name, value): return fr'(?P<{name}>{value})'
-def cap_obj(obj): return capture(obj.name, obj.re)
-def cap_opc(opc): return capture('opcode', opc)
-def cap_imm(): return capture('imm', r'[-+]?\d+')
-
-LDST_regex = fr"{cap_obj(ldst.opcode)}\s+{cap_obj(rd)}\s*,\s*{cap_imm()}\({cap_obj(rs1)}\)"
-LDSTSP_regex = fr"{cap_obj(ldst.opcode)}\s+{cap_obj(rd)}\s*,\s*{cap_imm()}\(sp\)"
-
-LDST_format = "{opcode:<7} {rd}, {imm}({rs1})"
-LDSTSP_format = "{opcode:<7} {rd}, {imm}(sp)"
-formats = {
-    "mv":       "{opcode:<7} {rd}, {rs_imm}",
-
-    "lb":       LDST_format,
-    "lh":       LDST_format,
-    "lw":       LDST_format,
-    "ld":       LDST_format,
-    "lq":       LDST_format,
-    "lbu":      LDST_format,
-    "lhu":      LDST_format,
-    "lwu/flw":  LDST_format,
-    "ldu/fld":  LDST_format,
-    "lwu":      LDST_format,
-    "ldu":      LDST_format,
-    "flw":      LDST_format,
-    "fld":      LDST_format,
-    "sb":       LDST_format,
-    "sh":       LDST_format,
-    "sw":       LDST_format,
-    "sd":       LDST_format,
-    "sq":       LDST_format,
-    "fsd":      LDST_format,
-    "fsw":      LDST_format,
-
-
-    "fsdsp/sqsp":LDSTSP_format,
-    "swsp":     LDSTSP_format,
-    "fswsp/sdsp":LDSTSP_format,
-    "fld/lq":   LDST_format,
-    "flw/ld":   LDST_format,
-    "fsd/sq":   LDST_format,
-    "fsw/sd":   LDST_format,
-}
-
-regexps = {
-    "mv":       fr"{cap_opc('mv')}\s+{cap_obj(rsd)}\s*,\s*{cap_obj(rs_imm)}",
-
-    "lb":       LDST_regex,
-    "lh":       LDST_regex,
-    "lw":       LDST_regex,
-    "ld":       LDST_regex,
-    "lq":       LDST_regex,
-    "lbu":      LDST_regex,
-    "lhu":      LDST_regex,
-    "lwu/flw":  LDST_regex,
-    "ldu/fld":  LDST_regex,
-    "lwu":      LDST_regex,
-    "ldu":      LDST_regex,
-    "flw":      LDST_regex,
-    "fld":      LDST_regex,
-    "sb":       LDST_regex,
-    "sh":       LDST_regex,
-    "sw":       LDST_regex,
-    "sd":       LDST_regex,
-    "sq":       LDST_regex,
-    "fsd":      LDST_regex,
-    "fsw":      LDST_regex,
-
-
-    "fsdsp/sqsp":LDSTSP_regex,
-    "swsp":     LDSTSP_regex,
-    "fswsp/sdsp":LDSTSP_regex,
-    "fld/lq":   LDST_regex,
-    "flw/ld":   LDST_regex,
-    "fsd/sq":   LDST_regex,
-    "fsw/sd":   LDST_regex,
-}
-
-
 
 
 rvc = [
@@ -615,23 +684,49 @@ def dump(instructions):
     print()
 
 
-def first_line(instructions, line):
-    return filter(None, ( row[1].cook_re(match) for row in instructions if (match := row[0].search(line)) ))
+def first_line(instructions, line, verbose=False):
+    result = []
+    for pattern,replace in unaliases.items():
+        line = re.sub(pattern, replace, line)
+
+    for row in instructions:
+        if not (match := row[0].search(line)):
+            if verbose: print(f"NOPE! {'   '.join(map(str, row)):<50} re: {row[0].re}")
+            continue
+        if verbose: print(f"OK: {'   '.join(map(str, row)):<50} re: {row[0].re}")
+        args = {}
+
+        for k, v in match.groupdict().items():
+            if hasattr(row[0], k):
+                args[k] = getattr(row[0], k).parse(v)
+                if args[k] is None:
+                    if verbose: print(f"failed to parse {k=} {v=}")
+                    args = None
+                    break
+        if args is not None:
+            if (regex := row[1].re_cook(args)):
+                if verbose: print(f"{regex.pattern=}")
+                result.append(regex)
+            else:
+                if verbose: print(f"second instruction rejected {match.groupdict()}")
+    return result
 
 
 def next_line(patterns, line):
+    for pattern,replace in unaliases.items():
+        line = re.sub(pattern, replace, line)
     return next((m for r in patterns if (m := r.search(line))), None)
 
 
 def try_pair(instructions, line0, line1):
-    patterns = tuple(first_line(instructions, line0))
     print("input0:", line0)
+    patterns = tuple(first_line(instructions, line0, verbose=True))
     for pat in patterns:
-        print(pat)
+        print('input1 pattern:', pat.pattern)
 
     print("\ninput1:", line1)
     match = next_line(patterns, line1)
-    print(match)
+    print(match, '\n')
 
 
 def compress(instructions, filename):
@@ -664,5 +759,7 @@ dump(rvc)
 dump(my_attempt)
 dump(attempt2)
 try_pair(attempt2, " slli a4,a1,48", " srli a4,a4,48")
+try_pair(attempt2, " ld a0,136(s1)", " lw a4,-1888(tp)")
+try_pair(attempt2, " mv a0, 123", " ret")
 
 compress(attempt2, "qemu-lite.txt")

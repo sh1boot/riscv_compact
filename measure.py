@@ -133,6 +133,7 @@ wordsizes = {
 }
 
 unsigned_immediates = {
+    "addi4spn",
     "andi",
     "slli",
     "srli",
@@ -406,10 +407,10 @@ class RegImm(Register, Immediate):
 
 class ari3(Instruction):
     opcode = Opcode("arith3", (
-        "addi",         # +0
-        "addi",         # -32
-        "addi",         # +32
-        "addi",         # -64
+        "addi",     # imm+0
+        "addi",     # imm+32
+        "addi",     # imm-64
+        "addi",     # imm-32
         "add",
         "sub",
         "and",
@@ -420,14 +421,14 @@ class ari3(Instruction):
 
 class ari4(Instruction):
     opcode = Opcode("arith4", (
-        "addi",         # +0
-        "addi",         # -32
-        "addiw",        # +0
-        "addiw",        # -32
-        "addi4spn",     # +0
-        "addi4spn",     # -32
-        "andi",         # +0
-        "andi",         # -32
+        "addi",     # imm+0
+        "addi",     # imm-32
+        "addiw",    # imm+0
+        "addiw",    # imm-32
+        "addi4spn", # imm+0
+        "addi4spn", # imm+32
+        "andi",     # imm+0
+        "andi",     # imm-32
         "add",
         "addw",
         "sub",
@@ -442,22 +443,22 @@ class ari4(Instruction):
 
 class ari5i(Instruction):
     opcode = Opcode("arith5i", (
-        "addi",         # +0
-        "addi",         # -32
-        "addiw",        # +0
-        "addiw",        # -32
-        "addi4spn",     # +0
-        "addi4spn",     # -32
-        "andi",         # +0
-        "andi",         # -32
-        "slli",         # +0
-        "slli",         # +32
-        "srli",         # +0
-        "srli",         # +32
-        "srai",         # +0
-        "srai",         # +32
-        "rsbi",         # +0
-        "rsbi",         # +32
+        "addi",     # imm+0
+        "addi",     # imm-32
+        "addiw",    # imm+0
+        "addiw",    # imm-32
+        "andi",     # imm+0
+        "andi",     # imm-32
+        "addi4spn", # imm+0
+        "addi4spn", # imm+32
+        "slli",     # imm+0
+        "slli",     # imm+32
+        "srli",     # imm+0
+        "srli",     # imm+32
+        "srai",     # imm+0
+        "srai",     # imm+32
+        "rsbi",     # imm+0
+        "rsbi",     # imm+32
     ))
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
@@ -492,14 +493,14 @@ class ari5(Instruction):
 
 class cmp(Instruction):
     opcode = Opcode("cmpi", (
-        "slti",         # +0
-        "slti",         # -32
-        "sltiu",        # +0
-        "sltiu",        # +32
-        "seqi",         # +0
-        "seqi",         # -32
-        "bittesti",     # +0
-        "bittesti",     # +32
+        "slti",     # imm+0
+        "slti",     # imm-32
+        "sltiu",    # imm+0
+        "sltiu",    # imm+32
+        "seqi",     # imm+0
+        "seqi",     # imm-32
+        "bittesti", # imm+0
+        "bittesti", # imm+32
     ))
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
@@ -532,7 +533,7 @@ class ldst(Instruction):
 
 class pair(Instruction):
     opcode_pairs = [
-        ("saddovf", "add"),
+        ("scarry", "add"),
         ("sub", "add"),
         ("min", "max"),
         ("minu", "maxu"),
@@ -678,7 +679,7 @@ def dump(inset : InstructionSet):
 
 
 def first_line(inset : InstructionSet, line, verbose=False):
-    result = set()
+    result = []
     why = set()
     for pat,repl in unaliases.items():
         line = re.sub(pat, repl, line)
@@ -713,7 +714,7 @@ def first_line(inset : InstructionSet, line, verbose=False):
                         args[k] = getattr(first, k).parse(v, hints=hints)
                 if verbose: print(f"Match: {first.name}, {prettydict(args)=}")
                 if (regex := second.re_cooked(args)):
-                    result.add((regex,i))
+                    result.append((regex,i))
                 else:
                     if verbose: print(f"second instruction rejected {match.groupdict()}")
             except ValueError as e:

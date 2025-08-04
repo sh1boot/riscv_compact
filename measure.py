@@ -1,10 +1,18 @@
 import math
 import re
 
+DEFAULT_IMM_SHIFT = 3
+
 LDST_regex = r"\b{opcode}\s+{rd},\s*{imm}[(]{rs1}[)]"
 LDSTSP_regex = r"\b{opcode}\s+{rd},\s*{imm}[(]sp[)]"
 REG_regex = r'zero|[astx][0123]?\d|[sgtf]p|ra'
-IMM_regex = r'[-+]\d+'
+IMM_regex = r'[-+]?\d+'
+
+unaliases = {
+    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<rs2>{REG_regex})":   r"add     \g<rd>,zero,\g<rs2>",
+    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<imm>{IMM_regex})":   r"addi    \g<rd>,zero,\g<imm>",
+    r"\bret\b":   "jr      ra",
+}
 
 LDST_format = "{opcode:<7} {rd},{imm}({rs1})"
 LDSTSP_format = "{opcode:<7} {rd},{imm}(sp)"
@@ -34,6 +42,7 @@ formats = {
 
 
     "fsdsp/sqsp":LDSTSP_format,
+    "lwsp":     LDSTSP_format,
     "swsp":     LDSTSP_format,
     "fswsp/sdsp":LDSTSP_format,
     "fld/lq":   LDST_format,
@@ -68,6 +77,7 @@ regexps = {
 
 
     "fsdsp/sqsp":LDSTSP_regex,
+    "lwsp":     LDSTSP_regex,
     "swsp":     LDSTSP_regex,
     "fswsp/sdsp":LDSTSP_regex,
     "fld/lq":   LDST_regex,
@@ -77,10 +87,67 @@ regexps = {
 }
 
 
-unaliases = {
-    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<rs2>{REG_regex})":   r"add     \g<rd>,zero,\g<rs2>",
-    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<imm>{IMM_regex})":   r"addi    \g<rd>,zero,\g<imm>",
-    r"\bret\b":   "jr      ra",
+wordsizes = {
+    "sh1add": 1,
+    "sh2add": 2,
+    "sh3add": 3,
+    "sh4add": 4,
+    "sh1sub": 1,
+    "sh2sub": 2,
+    "sh3sub": 3,
+    "sh4sub": 4,
+    "sh1addi": 1,
+    "sh2addi": 2,
+    "sh3addi": 3,
+    "sh4addi": 4,
+    "sh1subi": 1,
+    "sh2subi": 2,
+    "sh3subi": 3,
+    "sh4subi": 4,
+
+    "lh": 1,
+    "lhu": 1,
+    "sh": 1,
+    "lw": 2,
+    "lwu": 2,
+    "sw": 2,
+    "flw": 2,
+    "fsw": 2,
+    "lwu/flw": 2,
+    "lwsp": 2,
+    "swsp": 2,
+
+    "ld": 3,
+    "ldu": 3,
+    "sd": 3,
+    "fld": 3,
+    "fsd": 3,
+    "ldu/fld": 3,
+    "ldsp": 3,
+    "sdsp": 3,
+
+    "lq": 4,
+    "sq": 4,
+
+    "addi4spn": 2,
+}
+
+unsigned_immediates = {
+    "andi",
+    "slli",
+    "srli",
+    "srai",
+    "rsbi",
+    "sltiu",
+    "bittesti",
+    "sdsp",
+    "sqsp",
+    "lwsp",
+    "swsp",
+    "flwsp",
+    "fldsp",
+    "fswsp",
+    "fsdsp",
 }
 
 class Opcode:
@@ -101,39 +168,45 @@ class Opcode:
     def __str__(self):
         return self.name
     def __format__(self, spec):
+        if spec == 'pair':
+            try:
+                return pair.opcode_dict[self.name]
+            except KeyError as e:
+                raise KeyError(f"No '{self.name}' in {set(pair.opcode_dict.keys())}: {e}")
         return self.__str__().__format__(spec)
-    def __or__(self, other):
+    def __add__(self, other):
         return Opcode(
-                name="|".join((self.name, other.name)),
-                opcodes=(set(self.choices) | set(other.choices)),
+                name="+".join((self.name, other.name)),
+                opcodes=tuple(tuple(self.choices) + tuple(other.choices)),
                 aliases=(self.aliases | other.aliases)
         )
 
-    def parse(self, string, tweak=False):
+    def parse(self, string, hints={}):
         if string not in self.aliases:
-            return None
-        if tweak and hasattr(self, 'opcode_pairs'):
-            # TODO: something.  Including making up multiple matches for the mul/* pairs.
-            pass
+            raise ValueError(f"Opcode {string} not in {self.aliases}")
         return Opcode(string)
 
 
-def repack(*, rd=None, rs1=None, rsd=None, rs2=None, imm=None, rs_imm=None, shift=None, **kwargs):
-    if rs_imm: assert not (rs2 or imm)
-    if rsd: assert not (rd or rs1)
-    assert not (rs2 and imm)
+def repack(kwargs):
+    kwargs = dict(kwargs)
+    def repack_(*, rd=None, rs1=None, rsd=None, rs2=None, imm=None, rs_imm=None, **kwargs):
+        if rs_imm: assert not (rs2 or imm)
+        if rsd: assert not (rd or rs1)
+        assert not (rs2 and imm)
 
-    d = {
-        'rd': rd or rsd,
-        'rs1': rs1 or rsd,
-        'rs2': rs2,
-        'imm': imm,
-        'rs_imm': rs_imm or rs2 or imm,
-        'shift': shift,
-    }
-    kwargs.update({ k:v for k, v in d.items() if v })
-    return kwargs
+        d = {
+            'rd': rd or rsd,
+            'rs1': rs1 or rsd,
+            'rs2': rs2,
+            'imm': imm,
+            'rs_imm': rs_imm or rs2 or imm,
+        }
+        kwargs.update({ k:v for k, v in d.items() if v })
+        return kwargs
+    return repack_(**kwargs)
 
+def prettydict(kwargs):
+    return { k: v.name for k,v in kwargs.items() }
 
 class Instruction:
     def __init__(self, opcode, **kwargs):
@@ -163,7 +236,7 @@ class Instruction:
 
         if arglist:
             comma = '},{'
-            auto_fmt = f"{self.opcode.name:<7} {{{comma.join(arglist)}}}"
+            auto_fmt = f"{{opcode:<7}} {{{comma.join(arglist)}}}"
             re_comma = r'},\s*{'
             auto_re = fr"\b{{opcode}}\s+{{{re_comma.join(arglist)}}}"
         else:
@@ -185,18 +258,18 @@ class Instruction:
             return fmt.format(**expanded)
 
 
-        self.re_nocapture = no_capture_fmt(self.re, opcode=self.opcode, **repack(**kwargs))
-        self.re = capture_fmt(self.re, opcode=self.opcode, **repack(**kwargs))
-        print(self.re)
+        self.re_nocapture = no_capture_fmt(self.re, opcode=self.opcode, **repack(kwargs))
+        self.re = capture_fmt(self.re, opcode=self.opcode, **repack(kwargs))
         self.re_prog = re.compile(self.re, re.ASCII)
 
     def __str__(self):
-        fmt_args = repack(**vars(self))
+        fmt_args = repack(vars(self))
         try:
             return self.fmt.format(**fmt_args)
-        except Exception as e:
-            print(f"problem formatting: {self.fmt}, from: {fmt_args.keys()}")
-            raise e
+        except KeyError as e:
+            #raise KeyError(f"format {self.fmt=} - with {set(fmt_args.keys())}, exception={e}")
+            raise KeyError(f"format {self.fmt=} - with {fmt_args}, exception={e}")
+
     def __format__(self, spec):
         return self.__str__().__format__(spec)
 
@@ -208,16 +281,14 @@ class Instruction:
             if validate and not validate(v):
                 return None
         return match
-    def re_cook(self, fmt_args):
-        fmt_args = repack(**fmt_args)
+
+    def re_cooked(self, fmt_args):
+        fmt_args = repack(fmt_args)
         fmt_re = self.re_nocapture
         try:
             return re.compile(fmt_re.format(**fmt_args), re.ASCII)
         except KeyError as e:
-            # I think this is probably OK, but might revisit.
-            print(f"Trouble with '{fmt_re} looking for {e} in {fmt_args}")
-            pass
-        return None
+            raise KeyError(f"re_cooked {fmt_re=} - with {set(fmt_args.keys())}, exception={e}")
 
 
 class Register:
@@ -229,9 +300,10 @@ class Register:
     )
     aliases = set(choices) | {
         "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
-        "x8", "fp", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+        "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
         "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
         "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31",
+        "fp",
     }
     #re = '|'.join(aliases)
     re = REG_regex
@@ -247,11 +319,21 @@ class Register:
     def __str__(self):
         return self.name
     def __format__(self, spec):
+        if spec == 'pair':
+            if self.name == 'fp': return r"s1"
+            i = Register.choices.index(self.name)
+            return Register.choices[i^1]
+        if spec == 'next':
+            if self.name == 'fp': return r"t2|s1"
+            i = Register.choices.index(self.name)
+            if not (0 < i and i < len(Register.choices) - 1):
+                raise ValueError(f"Can't offer next register for register {i}")
+            return "|".join((Register.choices[i-1], Register.choices[i+1]))
         return self.__str__().__format__(spec)
 
-    def parse(self, string, tweak=False):
+    def parse(self, string, hints={}):
         if string not in self.aliases:
-            return None
+            raise ValueError(f"Register {string} not in {self.aliases}")
         return Register(string, 1)
 
 
@@ -263,59 +345,71 @@ class Register3(Register):
         super().__init__(name, 8)
 
 class Immediate:
-    re = r'[-+]?\d+\b'
-    def __init__(self, size, name=None):
+    re = IMM_regex
+    shift = 0
+    signed = True
+
+    def __init__(self, size, name=None, hints={}):
         self.name = name or f"imm{size}"
         self.bits = size
         self.count = 1 << size
+        self.shift = hints.get('shift', DEFAULT_IMM_SHIFT)
+        self.signed = hints.get('signed', True)
 
     def __str__(self):
         return self.name
     def __format__(self, spec):
+        if spec == 'next':
+            value = int(self.name)
+            k = 1 << self.shift
+            return (f"{value-k}|{value+k}")
         return self.__str__().__format__(spec)
 
-    def parse(self, string, tweak=False):
-        try:
-            value = int(string)
-        except ValueError:
-            return None
+    def parse(self, string, hints={}):
+        value = int(string)
 
-        # TODO: get proper value of k and signed
-        k = 16
-        signed = True
+        k = 1 << hints.get('shift', self.shift)
+        signed = hints.get('signed', self.signed)
+        bits = (self.bits + hints.get('extrabits', 0))
 
-        range_ = k << self.bits
-        if signed:
-            if not (-range_ // 2 <= value and value < range_ // 2):
-                return None
-        else:
-            if not (0 <= value and value < range_):
-                return None
-        # if value % k != 0:
-        #    return False
+        if self.bits > 0:  # No need to check range if we're working with implicit immediate
+            range_ = k << bits
+            if signed:
+                range_ //= 2
+                if not (-range_ <= value and value < range_):
+                    raise ValueError(f"Immediate {string} is out of range for {bits}-bit signed immediate {hints=}")
+            else:
+                if not (0 <= value and value < range_):
+                    raise ValueError(f"Immediate {string} is out of range for {bits}-bit unsigned immediate {hints=}")
+            # if value % k != 0:
+            #     raise ValueError(f"Immediate {string} is not a multiple of {k}")
 
-        retval = Immediate(size=0, name=string)
+        retval = Immediate(size=0, name=string, hints=hints)
         retval.re = str(value)
-        if tweak: retval.re += fr"|{str(value+k)}|{str(value-k)}"
         return retval
 
 
 class RegImm(Register, Immediate):
     re = f'{Register.re}|{Immediate.re}'
-    def __init__(self, name, reg_name, imm_name='imm', count=32):
+    def __init__(self, name, reg_name, imm_name='imm', count=32, hints={}):
         super().__init__(name, count)
+        self.shift = hints.get('shift', self.shift)
+        self.signed = hints.get('signed', True)
         re = fr'((?P<{reg_name}>{Register.re})|(?P<{imm_name}>{Immediate.re}))'
 
-    def parse(self, string, tweak=False):
-        return (Register.parse(self, string, tweak) or
-                Immediate.parse(self, string, tweak))
+    def parse(self, string, hints={}):
+        try:
+            return Register.parse(self, string, hints)
+        except ValueError:
+            pass
+        return Immediate.parse(self, string, hints)
 
 class ari3(Instruction):
     opcode = Opcode("arith3", (
         "addi",         # +0
+        "addi",         # -32
         "addi",         # +32
-        "subi",         # +0
-        "subi",         # +32
+        "addi",         # -64
         "add",
         "sub",
         "and",
@@ -391,7 +485,7 @@ class ari5r(Instruction):
         super().__init__(self.opcode, **kwargs)
 
 class ari5(Instruction):
-    opcode = ari5i.opcode | ari5r.opcode
+    opcode = ari5i.opcode + ari5r.opcode
     opcode.name = "arith5"
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
@@ -438,20 +532,34 @@ class ldst(Instruction):
 
 class pair(Instruction):
     opcode_pairs = [
-        ("add" ,"sltu*"),
-        ("and", "bic"),
+        ("saddovf", "add"),
+        ("sub", "add"),
         ("min", "max"),
         ("minu", "maxu"),
-        ("add", "sub"),
-        ("mul", "mulhsu"),
-        ("mul", "mulh"),
-        ("mul", "mulhu"),
+        ("and", "bic"),
+        ("mulhsu", "mul"),
+        ("mulh", "mul"),
+        ("mulhu", "mul"),
         ("div", "rem"),
         ("divu", "remu"),
-        ("undef_paira", "undef_pairb"),
-        ("undef_paira", "undef_pairb"),
+        ("undef_a", "undef_b"),
+        ("undef_c", "undef_d"),
     ]
-    opcode = Opcode("pair.a", tuple(p[0] for p in opcode_pairs), roundoff=False)
+    opcode_dict = { k: v for k,v in opcode_pairs } | {
+        "add": "sltu|sub",
+        "max": "min",
+        "maxu": "minu",
+        "bic": "and",
+        "mul": "mulhs?u?",
+        "rem": "div",
+        "remu": "divu",
+        "undef_b": "undef_a",
+        "undef_d": "undef_c",
+    }
+    opcode = Opcode("pair.a",
+        opcodes=tuple(p[0] for p in opcode_pairs),
+        aliases=set(opcode_dict.keys()),
+        roundoff=False)
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
@@ -491,9 +599,9 @@ class LDST(ImplicitInstruction):
 
 
 class PAIR(ImplicitInstruction):
-    #opcode = Opcode("pair.b", tuple(p[1] for p in pair.opcode_pairs), roundoff=False)
+    opcode = Opcode("{opcode:pair}")
     def __init__(self, **kwargs):
-        super().__init__("=Pair.B", **kwargs)
+        super().__init__(self.opcode, **kwargs)
 
 
 ZERO = ImplicitRegister("zero")
@@ -509,14 +617,11 @@ rsd_nz = Register("rsd", 31)
 rs1 = Register("rs1")
 rs2 = Register("rs2")
 
-rs_imm = RegImm("rs_imm", "rs2")
+rs_imm = RegImm("rs_imm", "rs2", "imm")
 rd_3 = Register3("rd")
 rsd_3 = Register3("rsd")
 rs1_3 = Register3("rs1")
 rs2_3 = Register3("rs2")
-
-
-SHL = ImplicitImmediate("<<k")
 
 imm0 = Immediate(0, "0")
 imm1 = Immediate(1)
@@ -547,8 +652,140 @@ class REUSE(ImplicitRegister):
     def __init__(self, src):
         super().__init__(f"{{{src}}}")
 
+class InstructionSet:
+    def __init__(self, name, instructions):
+        self.name = name
+        self.instructions = instructions
+        self.hitrate = [0] * len(instructions)
 
-rvc = [
+
+def dump(inset : InstructionSet):
+    size = 0
+    for ops,hits in zip(inset.instructions, inset.hitrate):
+        bits = 0
+        count = 1
+        display = []
+        for op in ops:
+            bits += op.bits
+            count *= op.count
+            display.append(f"{op.bits:2}: {str(op):<30}")
+
+        print(f"{size:#10x}{count:+#11x}: {"  ".join(display)}  ({bits:2} bits)  {hits} hits")
+        size += count
+
+    print(f"total size: {size:#x},  bits: {(size - 1).bit_length()}")
+    print()
+
+
+def first_line(inset : InstructionSet, line, verbose=False):
+    result = set()
+    why = set()
+    for pat,repl in unaliases.items():
+        line = re.sub(pat, repl, line)
+
+    def printonce(*args, **kwargs):
+        print(*args, **kwargs)
+        while True: yield " "
+    header = printonce("input:", line)
+
+    no_matches = True
+    for i in range(len(inset.instructions)):
+        first = inset.instructions[i][0]
+        if (match := first.search(line)):
+            no_matches = False
+            opcode = match['opcode']
+            second = inset.instructions[i][1]
+            try:
+                opcode_count = first.opcode.choices.count(opcode)
+            except AttributeError:
+                opcode_count = 1
+            hints = {
+                'opcode': opcode,
+                'shift': wordsizes.get(opcode, 0),
+                'signed': opcode not in unsigned_immediates,
+                'extrabits': (opcode_count - 1).bit_length(),
+            }
+            if verbose: print(f"{hints=}")
+            try:
+                args = {}
+                for k, v in match.groupdict().items():
+                    if hasattr(first, k):
+                        args[k] = getattr(first, k).parse(v, hints=hints)
+                if verbose: print(f"Match: {first.name}, {prettydict(args)=}")
+                if (regex := second.re_cooked(args)):
+                    result.add((regex,i))
+                else:
+                    if verbose: print(f"second instruction rejected {match.groupdict()}")
+            except ValueError as e:
+                if 'range' in str(e): why.add('range')
+                why.add('value')
+                if verbose: print(next(header), f"parse failure on match {first.name}: {e}")
+            except KeyError as e:
+                why.add('construct')
+                print(next(header), f"construction error for {second.name}: {e}")
+    if no_matches:
+        why.add('nomatch')
+    return result, why
+
+
+def next_line(patterns, line):
+    for pattern,replace in unaliases.items():
+        line = re.sub(pattern, replace, line)
+    for pat in patterns:
+        if pat[0].search(line):
+            return pat
+    return None
+
+
+def try_pair(inset : InstructionSet, line0, line1):
+    patterns,why = first_line(inset, line0, verbose=True)
+    if why: print("  input1 problems:", why)
+    for pat in patterns:
+        print('  pattern:', pat[0].pattern)
+
+    print("input0:", line0)
+    print("input1:", line1)
+    pat = next_line(patterns, line1)
+    print("success" if pat else "failure")
+    print()
+
+
+def compress(inset : InstructionSet, filename, verbose=True, quiet=False):
+    saved = 0
+    total = 0
+    with open(filename, "rt") as f:
+        prev = None
+        patterns = []
+        for line in f:
+            line = line.strip()
+            if not line.startswith('0x'):
+                if verbose and not quiet: print('#', line)
+                continue
+
+            if (pat := next_line(patterns, line)):
+                if verbose and not quiet:
+                    print("..", prev)
+                    print("^^", line)
+                prev = None
+                patterns = []
+                saved += 1
+                inset.hitrate[pat[1]] += 1
+            else:
+                if prev and not quiet: print(f"{len(patterns):2} {prev}")
+                prev = None
+                failed_patterns = patterns
+                patterns, why = first_line(inset, line)
+                if patterns:
+                    prev = line
+                else:
+                    if not quiet: print("XX", line, ' - ', why)
+            total += 1
+
+    dump(inset)
+    print(f"{saved=}, {total=}")
+
+
+rvc = InstructionSet("rvc", [
     # Q0
     ( Instruction("addi4spn",      rd=rd_3, rs1=SP, imm=imm8), ),
     ( Instruction("fld/lq",        rd=rd_3, rs1=rs1_3, imm=imm5), ),
@@ -592,9 +829,9 @@ rvc = [
     ( Instruction("fsdsp/sqsp",    rd=rd, rs1=SP, imm=imm6), ),
     ( Instruction("swsp",          rd=rd, rs1=SP, imm=imm6), ),
     ( Instruction("fswsp/sdsp",    rd=rd, rs1=SP, imm=imm6), ),
-]
+])
 
-my_attempt = [
+my_attempt = InstructionSet("my_attempt", [
     ( ari4(rsd=rsd, rs_imm=rs_imm),             ari4(rsd=rsd, rs_imm=rs_imm), ),
     ( ari4(rd=T6, rs1=rs1, rs_imm=rs_imm),      ari4(rd=rd, rs1=T6, rs_imm=rs_imm), ),
 # share Rs2:
@@ -621,13 +858,13 @@ my_attempt = [
 
     ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
 
-    ( ldst(rd=rd, rs1=rs1, imm=imm10, shift=SHL), LDST(rd=REUSE("Rd+1"), rs1=REUSE("rs1"), imm=REUSE("Imm+1"),shift=SHL), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm10),          LDST(rd=REUSE("rd:next"), rs1=REUSE("rs1"), imm=REUSE("imm:next")), ),
 
-    ( ari3(rsd=rsd, rs_imm=rs_imm,shift=SHL),   ldst(rd=rd, rs1=rs1, imm=imm0), ),
-    ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm,shift=SHL), ),
-]
+    ( ari3(rsd=rsd, rs_imm=rs_imm),             ldst(rd=rd, rs1=rs1, imm=imm0), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm), ),
+])
 
-attempt2 = [
+attempt2 = InstructionSet("my second attempt", [
     ( ari4(rsd=rsd, rs_imm=rs_imm),             ari4(rsd=rsd, rs_imm=rs_imm), ),
     ( ari4(rd=T6, rs1=rs1, rs_imm=rs_imm),      ari4(rd=rd, rs1=T6, rs_imm=rs_imm), ),
 # share Rs2:
@@ -659,107 +896,33 @@ attempt2 = [
 
     ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
 
-    ( ldst(rd=rd, rs1=rs1, imm=imm5,shift=SHL), LDST(rd=rd, rs1=REUSE("rs1"), imm=REUSE("imm"), shift=SHL), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm5),           LDST(rd=rd, rs1=REUSE("rs1"), imm=REUSE("imm:next")), ),
 
-    ( ari3(rsd=rsd, rs_imm=rs_imm,shift=SHL),   ldst(rd=rd, rs1=rs1, imm=imm0), ),
-    ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm,shift=SHL), ),
-]
+    ( ari3(rsd=rsd, rs_imm=rs_imm),             ldst(rd=rd, rs1=rs1, imm=imm0), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm), ),
+])
 
-
-def dump(instructions):
-    size = 0
-    for ops in instructions:
-        bits = 0
-        count = 1
-        display = []
-        for op in ops:
-            bits += op.bits
-            count *= op.count
-            display.append(f"{op.bits:2}: {str(op):<30}")
-
-        print(f"{size:#10x}{count:+#11x}: {"  ".join(display)}  ({bits:2} bits)")
-        size += count
-
-    print(f"total size: {size:#x},  bits: {(size - 1).bit_length()}")
-    print()
-
-
-def first_line(instructions, line, verbose=False):
-    result = []
-    for pattern,replace in unaliases.items():
-        line = re.sub(pattern, replace, line)
-
-    for row in instructions:
-        if not (match := row[0].search(line)):
-            if verbose: print(f"NOPE! {'   '.join(map(str, row)):<50} re: {row[0].re}")
-            continue
-        if verbose: print(f"OK: {'   '.join(map(str, row)):<50} re: {row[0].re}")
-        args = {}
-
-        for k, v in match.groupdict().items():
-            if hasattr(row[0], k):
-                args[k] = getattr(row[0], k).parse(v)
-                if args[k] is None:
-                    if verbose: print(f"failed to parse {k=} {v=}")
-                    args = None
-                    break
-        if args is not None:
-            if (regex := row[1].re_cook(args)):
-                if verbose: print(f"{regex.pattern=}")
-                result.append(regex)
-            else:
-                if verbose: print(f"second instruction rejected {match.groupdict()}")
-    return result
-
-
-def next_line(patterns, line):
-    for pattern,replace in unaliases.items():
-        line = re.sub(pattern, replace, line)
-    return next((m for r in patterns if (m := r.search(line))), None)
-
-
-def try_pair(instructions, line0, line1):
-    print("input0:", line0)
-    patterns = tuple(first_line(instructions, line0, verbose=True))
-    for pat in patterns:
-        print('input1 pattern:', pat.pattern)
-
-    print("\ninput1:", line1)
-    match = next_line(patterns, line1)
-    print(match, '\n')
-
-
-def compress(instructions, filename):
-    saved = 0
-    total = 0
-    with open(filename, "rt") as f:
-        patterns = []
-        for line in f:
-            line = line.strip()
-            if not line.startswith('0x'):
-                print('#', line)
-                continue
-
-            match = next_line(patterns, line)
-            if match:
-                print("^^", line)
-                patterns = []
-                saved += 1
-            else:
-                failed_patterns = patterns
-                patterns = tuple(first_line(instructions, line))
-                print(f"{len(patterns):2} {line}")
-                #if failed_patterns:
-                #    print(f"  (all failed: {failed_patterns})")
-            total += 1
-
-        print(f"{saved=}, {total=}")
+## Do some stuff
 
 dump(rvc)
 dump(my_attempt)
 dump(attempt2)
 try_pair(attempt2, " slli a4,a1,48", " srli a4,a4,48")
 try_pair(attempt2, " ld a0,136(s1)", " lw a4,-1888(tp)")
-try_pair(attempt2, " mv a0, 123", " ret")
+try_pair(attempt2, " mv a0,a1", " ret")
+try_pair(attempt2, " mv a2,123", " ret")
+try_pair(attempt2, " ld ra,152(sp)", " ld s0,144(sp)")
+try_pair(attempt2, "xor a5,a5,a4", "bnez a5,242")
 
-compress(attempt2, "qemu-lite.txt")
+try_pair(attempt2, "mv   a0,s10", "`addi sp,sp,-16")
+try_pair(attempt2, "sd   s0,8(sp)", "`addi s0,sp,16")
+
+try_pair(attempt2, "max a3,a5,a4", "min a2,a5,a4")
+print('---------\n\n')
+
+try:
+    compress(attempt2, "qemu-lite.txt")
+    compress(my_attempt, "qemu-lite.txt", quiet=True)
+except KeyboardInterrupt:
+    print("stopped by ^C")
+

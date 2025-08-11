@@ -1,4 +1,5 @@
-import math
+import copy
+from enum import Enum
 import re
 
 DEFAULT_IMM_SHIFT = 3
@@ -9,8 +10,8 @@ REG_regex = r'zero|[astx][0123]?\d|[sgtf]p|ra'
 IMM_regex = r'[-+]?\d+'
 
 unaliases = {
-    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<rs2>{REG_regex})":   r"add     \g<rd>,zero,\g<rs2>",
-    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<imm>{IMM_regex})":   r"addi    \g<rd>,zero,\g<imm>",
+    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<rs2>{REG_regex})":   r"add \g<rd>,zero,\g<rs2>",
+    fr"\bmv\s+(?P<rd>{REG_regex}),\s*(?P<imm>{IMM_regex})":   r"addi \g<rd>,zero,\g<imm>",
     r"\bret\b":   "jr      ra",
 }
 
@@ -151,41 +152,262 @@ unsigned_immediates = {
     "fsdsp",
 }
 
-class Opcode:
+
+class ChoiceOf:
     bits = 0
     count = 1
-
-    name = "generic name"
-    def __init__(self, name, opcodes=(), roundoff=True, aliases=()):
+    name = "unnamed"
+    def __init__(self, name, *, choices=(), roundoff=True):
         self.name = name
-        self.choices = opcodes or (name,)
+        self.choices = choices or (name,)
         self.count = len(self.choices)
-        self.aliases = set(self.choices) | set(aliases)
         self.bits = (self.count - 1).bit_length()
         if roundoff:
             self.count = 1 << self.bits
-        self.re = f"{'|'.join(self.aliases)}"
+
+    def __str__(self):
+        if len(self.choices) > 1:
+            return self.name+':'+str((len(self.choices) - 1).bit_length())
+        return self.name
+
+    def __format__(self, spec):
+        if spec == 'next' or spec == 'n':
+            index = self.choices.index(self.name)
+            return "|".join(map(str, filter(None, (self - 1, self + 1))))
+        return self.__str__().__format__(spec)
+
+    def dup(self, *args, **kwargs):
+        retval = copy.copy(self)
+        retval.__init__(*args, **kwargs)
+        return retval
+
+    def __add__(self, other):
+        assert isinstance(other, int)
+        index = self.choices.index(self.name) + other
+        if 0 <= index and index < len(self.choices):
+            return self.dup(self.choices[index])
+        return None
+
+    def __sub__(self, other):
+        assert isinstance(other, int)
+        return self.__add__(-other)
+
+
+class Opcode(ChoiceOf):
+    def __add__(self, other):
+        return Opcode(
+                name="+".join((self.name, other.name)),
+                choices=tuple(tuple(self.choices) + tuple(other.choices))
+        )
+
+    def parse(self, string, hints={}):
+        if string not in self.choices:
+            raise ValueError(f"'{string}' not in {self.name}")
+        return Opcode(string)
+
+
+class RegName(Enum):
+     zero = 0
+     ra  = 1
+     sp  = 2
+     gp  = 3
+     tp  = 4
+     t0  = 5
+     t1  = 6
+     t2  = 7
+     s0  = 8
+     s1  = 9
+     a0  = 10
+     a1  = 11
+     a2  = 12
+     a3  = 13
+     a4  = 14
+     a5  = 15
+     a6  = 16
+     a7  = 17
+     s2  = 18
+     s3  = 19
+     s4  = 20
+     s5  = 21
+     s6  = 22
+     s7  = 23
+     s8  = 24
+     s9  = 25
+     s10 = 26
+     s11 = 27
+     t3  = 28
+     t4  = 29
+     t5  = 30
+     t6  = 31
+
+     fp  = 8
+
+     x0  = 0
+     x1  = 1
+     x2  = 2
+     x3  = 3
+     x4  = 4
+     x5  = 5
+     x6  = 6
+     x7  = 7
+     x8  = 8
+     x9  = 9
+     x10 = 10
+     x11 = 11
+     x12 = 12
+     x13 = 13
+     x14 = 14
+     x15 = 15
+     x16 = 16
+     x17 = 17
+     x18 = 18
+     x19 = 19
+     x20 = 20
+     x21 = 21
+     x22 = 22
+     x23 = 23
+     x24 = 24
+     x25 = 25
+     x26 = 26
+     x27 = 27
+     x28 = 28
+     x29 = 29
+     x30 = 30
+     x31 = 31
+
+class Register(ChoiceOf):
+    choices = tuple(RegName)
+
+    def __init__(self, name, *, choices=None, nonzero=False, **kwargs):
+        choices = choices or (self.choices if not nonzero else self.choices[1:32])
+        super().__init__(name, choices=choices, roundoff=False, **kwargs)
+
+    def parse(self, value, hints={}):
+        if isinstance(value, str):
+            value = RegName[value]
+        elif isinstance(value, int):
+            value = RegName(value)
+        assert isinstance(value, RegName)
+        if value not in self.choices:
+            raise ValueError(f"{value} not one of {self.choices=}")
+        return SpecificRegister(value)
+
+
+class SpecificRegister(Register):
+    def __init__(self, reg):
+        assert isinstance(reg, RegName)
+        super().__init__(reg.name, choices=(reg,))
+
+
+class Register4(Register):
+    choices = tuple(map(RegName, range(16)))
+    def __init__(self, name):
+        super().__init__(name, choices=Register4.choices)
+
+
+class Register3(Register):
+    choices = tuple(map(RegName, range(8,16)))
+    def __init__(self, name):
+        super().__init__(name, choices=Register3.choices)
+
+
+class Immediate:
+    shift = 0
+
+    def __init__(self, size=0, name=None, choices=(), hints={}):
+        assert bool(size > 0) ^ bool(choices), f"{size=}, {choices=}"
+        self.name = name or f"imm{size}"
+        self.bits = size
+        self.count = 1 << size
+        self.shift = hints.get('shift', DEFAULT_IMM_SHIFT)
+        if choices:
+            self.choices = choices
+        elif hints.get('signed', True):
+            self.choices = range(-1 << (self.bits - 1), 1 << (self.bits - 1))
+        else:
+            self.choices = range(0, 1 << self.bits)
 
     def __str__(self):
         return self.name
     def __format__(self, spec):
-        if spec == 'pair':
-            try:
-                return pair.opcode_dict[self.name]
-            except KeyError as e:
-                raise KeyError(f"No '{self.name}' in {set(pair.opcode_dict.keys())}: {e}")
+        if spec == 'next':
+            value = int(self.name)
+            k = 1 << self.shift
+            return (f"{value-k}|{value+k}")
         return self.__str__().__format__(spec)
+
     def __add__(self, other):
-        return Opcode(
-                name="+".join((self.name, other.name)),
-                opcodes=tuple(tuple(self.choices) + tuple(other.choices)),
-                aliases=(self.aliases | other.aliases)
-        )
+        assert isinstance(other, int)
+        assert self.choices
+        other <<= self.shift
+        choices = tuple(x + other for x in self.choices)
+        return self.dup(name=f"{self.name}+{other}", choices=choices)
+
+    def __sub__(self, other):
+        assert isinstance(other, int)
+        return self.__add__(-other)
+
+    def dup(self, *args, **kwargs):
+        retval = copy.copy(self)
+        retval.__init__(*args, **kwargs)
+        return retval
 
     def parse(self, string, hints={}):
-        if string not in self.aliases:
-            raise ValueError(f"Opcode {string} not in {self.aliases}")
-        return Opcode(string)
+        value = int(string)
+        shift = hints.get('shift', self.shift)
+        if value & ((1 << shift) - 1) != 0:
+            raise ValueError(f"{value=} needs to be multiple of {1 << shift}")
+        if not (value >> shift) in self.choices:
+            raise ValueError(f"{value=} must be one of {self.choices=}")
+        # TODO: ensure shift gets into result:
+        return SpecificImmediate(name=string, value=value, hints=hints)
+
+
+class SpecificImmediate(Immediate):
+    def __init__(self, name, value=None, choices=(), hints={}):
+        assert (value is not None) ^ bool(choices), f"{value=}, {choices=}"
+        choices = choices or (value,)
+        super().__init__(size=0, name=name, choices=choices, hints=hints)
+        self.value = value
+
+
+class RegImm(Register, Immediate):
+    def __init__(self, name, reg_name, imm_name='imm', choices=(), hints={}):
+        super().__init__(name, choices=choices)
+        self.shift = hints.get('shift', self.shift)
+        self.signed = hints.get('signed', True)
+
+    def parse(self, string, hints={}):
+        try:
+            return Register.parse(self, string, hints)
+        except ValueError:
+            pass
+        return Immediate.parse(self, string, hints)
+
+
+class REUSE(ChoiceOf):
+    def __init__(self, src, mode=None):
+        name = f"[[{src}]]"
+        if isinstance(mode, dict):
+            name = f"[[d({src})]]"
+        elif isinstance(mode, str):
+            name = f"[[{src}:{mode}]]"
+        super().__init__(name)
+        self.src = src
+        self.mode = mode
+
+    def parse(self, src, hints={}):
+        if self.mode is None:
+            return src
+        if isinstance(self.mode, dict):
+            choices = ()
+            for v in src.choices:
+                choices += self.mode.get(v, ())
+            print(f"REUSE:dict {choices=}")
+            return src.dup(name=self.name, choices=choices)
+        if self.mode == "n":
+            choices = getattr(src - 1, 'choices', ()) + getattr(src + 1, 'choices', ())
+            return src.dup(name=self.name, choices=choices)
 
 
 def repack(kwargs):
@@ -196,6 +418,7 @@ def repack(kwargs):
         assert not (rs2 and imm)
 
         d = {
+            'rsd': rsd,
             'rd': rd or rsd,
             'rs1': rs1 or rsd,
             'rs2': rs2,
@@ -210,26 +433,17 @@ def prettydict(kwargs):
     return { k: v.name for k,v in kwargs.items() }
 
 class Instruction:
-    def __init__(self, opcode, **kwargs):
+    def __init__(self, opcode, hints={}, **kwargs):
         if isinstance(opcode, str): opcode = Opcode(opcode)
-        assert isinstance(opcode, Opcode), f"op={opcode}, {repr(opcode)}"
+        assert isinstance(opcode, (Opcode, REUSE)), f"op={opcode}, {repr(opcode)}"
         self.name = f"Instruction('{opcode.name}')"
         self.opcode = opcode
         bits = opcode.bits
         count = opcode.count
         arglist = []
-        unique = set()
         for k, v in kwargs.items():
-            if k == 'rsd':
-                arglist.append('rd')
-                arglist.append('rs1')
-                setattr(self, 'rd', v)
-                setattr(self, 'rs1', v)
-            else:
-                arglist.append(k)
-                setattr(self, k, v)
-            unique.add(v)
-        for v in unique:
+            arglist.append(k)
+            setattr(self, k, v)
             bits += v.bits
             count *= v.count
         self.bits = bits
@@ -238,30 +452,11 @@ class Instruction:
         if arglist:
             comma = '},{'
             auto_fmt = f"{{opcode:<7}} {{{comma.join(arglist)}}}"
-            re_comma = r'},\s*{'
-            auto_re = fr"\b{{opcode}}\s+{{{re_comma.join(arglist)}}}"
         else:
             auto_fmt = f"{self.opcode.name}"
-            auto_re = f"{self.opcode.name}"
 
         if not hasattr(self, 'fmt'):
             self.fmt = formats.get(self.opcode.name, auto_fmt)
-
-        if not hasattr(self, 're'):
-            self.re = regexps.get(self.opcode.name, auto_re)
-
-        def capture_fmt(fmt, **kwargs):
-            expanded = { k: f"(?P<{k}>{v.re})" for k,v in kwargs.items() }
-            return fmt.format(**expanded)
-
-        def no_capture_fmt(fmt, **kwargs):
-            expanded = { k: f"({v.re})" for k,v in kwargs.items() }
-            return fmt.format(**expanded)
-
-
-        self.re_nocapture = no_capture_fmt(self.re, opcode=self.opcode, **repack(kwargs))
-        self.re = capture_fmt(self.re, opcode=self.opcode, **repack(kwargs))
-        self.re_prog = re.compile(self.re, re.ASCII)
 
     def __str__(self):
         fmt_args = repack(vars(self))
@@ -274,6 +469,51 @@ class Instruction:
     def __format__(self, spec):
         return self.__str__().__format__(spec)
 
+    def parse(self, opcode, operands, hints={}):
+        opc = self.opcode.parse(opcode)
+        operands = list(operands)
+        # TODO: maybe look up values for hints here rather than externally?
+        args = {}
+        if hasattr(self, 'rsd'):
+            rd = operands.pop(0)
+            rs1 = operands.pop(0)
+            args['rsd'] = self.rsd.parse(rd, hints=hints)
+            # Raise an error if rs1 doesn't match rd.
+            args['rsd'].parse(rs1, hints=hints)
+        else:
+            if hasattr(self, 'rd'):
+                args['rd'] = self.rd.parse(operands.pop(0), hints=hints)
+            if hasattr(self, 'rs1'):
+                args['rs1'] = self.rs1.parse(operands.pop(0), hints=hints)
+        if hasattr(self, 'rs_imm'):
+            tmp = self.rs_imm.parse(operands.pop(0), hints=hints)
+            if isinstance(tmp, Register):
+                args['rs2'] = tmp
+            else:
+                args['imm'] = tmp
+        else:
+            if hasattr(self, 'rs2'):
+                args['rs2'] = self.rs2.parse(operands.pop(0), hints=hints)
+            if hasattr(self, 'imm'):
+                args['imm'] = self.imm.parse(operands.pop(0), hints=hints)
+        if operands:
+            raise ValueError(f"Too many operands: {operands}")
+        return Instruction(opc, **args, hints=hints)
+
+    def specialise(self, ref, hints={}):
+        # print(f"Forwarding '{ref}' arguments to '{self}', {hints=}")
+        result = copy.copy(self)
+        for k in vars(result):
+            v = getattr(result, k)
+            if isinstance(v, REUSE):
+                alt = 'rsd' if v.src == 'rd' else 'nevermind'
+                replacement = getattr(ref, v.src, getattr(ref, alt, None))
+                # print(f"  setting {k} to {replacement}")
+                setattr(result, k, v.parse(replacement))
+                result.name += "/" + k
+        # print(f"Result of forwarding: {result}")
+        return result
+
     def search(self, *args, **kwargs):
         if not (match := self.re_prog.search(*args, **kwargs)):
             return None
@@ -283,130 +523,23 @@ class Instruction:
                 return None
         return match
 
-    def re_cooked(self, fmt_args):
-        fmt_args = repack(fmt_args)
-        fmt_re = self.re_nocapture
-        try:
-            return re.compile(fmt_re.format(**fmt_args), re.ASCII)
-        except KeyError as e:
-            raise KeyError(f"re_cooked {fmt_re=} - with {set(fmt_args.keys())}, exception={e}")
+
+class ImplicitInstruction(Instruction):
+    def __init__(self, opcode, **kwargs):
+        super().__init__(opcode, **kwargs)
+
+class Reserved(Instruction):
+    opcode = Opcode("--reserved--")
+    def __init__(self, bits, message=None):
+        super().__init__(self.opcode)
+        self.bits = bits
+        self.count = 1 << bits
+        self.fmt = message or "--reserved--"
 
 
-class Register:
-    choices = (
-        "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
-        "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
-        "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
-        "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
-    )
-    aliases = set(choices) | {
-        "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
-        "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
-        "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
-        "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31",
-        "fp",
-    }
-    #re = '|'.join(aliases)
-    re = REG_regex
-    def __init__(self, name, count = 32):
-        self.name = name
-        self.count = count
-        self.bits = (self.count - 1).bit_length()
-        if count == 1:
-            self.choices = { name }
-            self.aliases = self.choices  # TODO: look up correct aliases
-            self.re = name
-
-    def __str__(self):
-        return self.name
-    def __format__(self, spec):
-        if spec == 'pair':
-            if self.name == 'fp': return r"s1"
-            i = Register.choices.index(self.name)
-            return Register.choices[i^1]
-        if spec == 'next':
-            if self.name == 'fp': return r"t2|s1"
-            i = Register.choices.index(self.name)
-            if not (0 < i and i < len(Register.choices) - 1):
-                raise ValueError(f"Can't offer next register for register {i}")
-            return "|".join((Register.choices[i-1], Register.choices[i+1]))
-        return self.__str__().__format__(spec)
-
-    def parse(self, string, hints={}):
-        if string not in self.aliases:
-            raise ValueError(f"Register {string} not in {self.aliases}")
-        return Register(string, 1)
-
-
-class Register3(Register):
-    choices = ( "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5", )
-    aliases = set(choices) | { "x8", "fp", "x9", "x10", "x11", "x12", "x13", "x14", "x15", }
-    re = '|'.join(aliases)
-    def __init__(self, name):
-        super().__init__(name, 8)
-
-class Immediate:
-    re = IMM_regex
-    shift = 0
-    signed = True
-
-    def __init__(self, size, name=None, hints={}):
-        self.name = name or f"imm{size}"
-        self.bits = size
-        self.count = 1 << size
-        self.shift = hints.get('shift', DEFAULT_IMM_SHIFT)
-        self.signed = hints.get('signed', True)
-
-    def __str__(self):
-        return self.name
-    def __format__(self, spec):
-        if spec == 'next':
-            value = int(self.name)
-            k = 1 << self.shift
-            return (f"{value-k}|{value+k}")
-        return self.__str__().__format__(spec)
-
-    def parse(self, string, hints={}):
-        value = int(string)
-
-        k = 1 << hints.get('shift', self.shift)
-        signed = hints.get('signed', self.signed)
-        bits = (self.bits + hints.get('extrabits', 0))
-
-        if self.bits > 0:  # No need to check range if we're working with implicit immediate
-            range_ = k << bits
-            if signed:
-                range_ //= 2
-                if not (-range_ <= value and value < range_):
-                    raise ValueError(f"Immediate {string} is out of range for {bits}-bit signed immediate {hints=}")
-            else:
-                if not (0 <= value and value < range_):
-                    raise ValueError(f"Immediate {string} is out of range for {bits}-bit unsigned immediate {hints=}")
-            # if value % k != 0:
-            #     raise ValueError(f"Immediate {string} is not a multiple of {k}")
-
-        retval = Immediate(size=0, name=string, hints=hints)
-        retval.re = str(value)
-        return retval
-
-
-class RegImm(Register, Immediate):
-    re = f'{Register.re}|{Immediate.re}'
-    def __init__(self, name, reg_name, imm_name='imm', count=32, hints={}):
-        super().__init__(name, count)
-        self.shift = hints.get('shift', self.shift)
-        self.signed = hints.get('signed', True)
-        re = fr'((?P<{reg_name}>{Register.re})|(?P<{imm_name}>{Immediate.re}))'
-
-    def parse(self, string, hints={}):
-        try:
-            return Register.parse(self, string, hints)
-        except ValueError:
-            pass
-        return Immediate.parse(self, string, hints)
 
 class ari3(Instruction):
-    opcode = Opcode("arith3", (
+    opcode = Opcode("arith3", choices=(
         "addi",     # imm+0
         "addi",     # imm+32
         "addi",     # imm-64
@@ -420,7 +553,7 @@ class ari3(Instruction):
         super().__init__(self.opcode, **kwargs)
 
 class ari4(Instruction):
-    opcode = Opcode("arith4", (
+    opcode = Opcode("arith4", choices=(
         "addi",     # imm+0
         "addi",     # imm-32
         "addiw",    # imm+0
@@ -442,7 +575,7 @@ class ari4(Instruction):
         super().__init__(self.opcode, **kwargs)
 
 class ari5i(Instruction):
-    opcode = Opcode("arith5i", (
+    opcode = Opcode("arith5i", choices=(
         "addi",     # imm+0
         "addi",     # imm-32
         "addiw",    # imm+0
@@ -464,7 +597,7 @@ class ari5i(Instruction):
         super().__init__(self.opcode, **kwargs)
 
 class ari5r(Instruction):
-    opcode = Opcode("arith5r", (
+    opcode = Opcode("arith5r", choices=(
         "add",
         "addw",
         "sub",
@@ -492,7 +625,7 @@ class ari5(Instruction):
         super().__init__(self.opcode, **kwargs)
 
 class cmp(Instruction):
-    opcode = Opcode("cmpi", (
+    opcode = Opcode("cmpi", choices=(
         "slti",     # imm+0
         "slti",     # imm-32
         "sltiu",    # imm+0
@@ -506,7 +639,7 @@ class cmp(Instruction):
         super().__init__(self.opcode, **kwargs)
 
 class ldst(Instruction):
-    opcode = Opcode("ldst", (
+    opcode = Opcode("ldst", choices=(
         "lb",
         "lh",
         "lw",
@@ -531,6 +664,14 @@ class ldst(Instruction):
         super().__init__(self.opcode, **kwargs)
 
 
+class LDST(ImplicitInstruction):
+    opcode = Opcode("{opcode}")
+    fmt = ldst.fmt
+    re = ldst.re
+    def __init__(self, **kwargs):
+        super().__init__(self.opcode, **kwargs)
+
+
 class pair(Instruction):
     opcode_pairs = [
         ("scarry", "add"),
@@ -546,75 +687,39 @@ class pair(Instruction):
         ("undef_a", "undef_b"),
         ("undef_c", "undef_d"),
     ]
-    opcode_dict = { k: v for k,v in opcode_pairs } | {
-        "add": "sltu|sub",
-        "max": "min",
-        "maxu": "minu",
-        "bic": "and",
-        "mul": "mulhs?u?",
-        "rem": "div",
-        "remu": "divu",
-        "undef_b": "undef_a",
-        "undef_d": "undef_c",
-    }
     opcode = Opcode("pair.a",
-        opcodes=tuple(p[0] for p in opcode_pairs),
-        aliases=set(opcode_dict.keys()),
-        roundoff=False)
-    def __init__(self, **kwargs):
-        super().__init__(self.opcode, **kwargs)
-
-
-class Reserved(Instruction):
-    opcode = Opcode("--reserved--")
-    def __init__(self, bits, message=None):
-        super().__init__(self.opcode)
-        self.bits = bits
-        self.count = 1 << bits
-        self.fmt = message or "--reserved--"
-
-
-class ImplicitInstruction(Instruction):
-    def __init__(self, opcode, **kwargs):
-        super().__init__(opcode, **kwargs)
-
-
-class ImplicitRegister(Register):
-    def __init__(self, name):
-        super().__init__(name, 1)
-        self.re = name
-
-
-class ImplicitImmediate(Immediate):
-    def __init__(self, name):
-        super().__init__(0, name)
-        self.re = name
-
-
-class LDST(ImplicitInstruction):
-    opcode = Opcode("{opcode}")
-    fmt = ldst.fmt
-    re = ldst.re
+        choices=sum(opcode_pairs, ()), roundoff=False)
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
 
 class PAIR(ImplicitInstruction):
-    opcode = Opcode("{opcode:pair}")
+    pair_dict = { k: (v,) for k,v in pair.opcode_pairs } | {
+        "add":  ("sltu", "sub",),
+        "max":  ("min",),
+        "maxu": ("minu",),
+        "bic":  ("and",),
+        "mul":  ("mulh", "mulhu", "mulhsu",),
+        "rem":  ("div",),
+        "remu": ("divu",),
+        "undef_b": ("undef_a",),
+        "undef_d": ("undef_c",),
+    }
+    opcode = REUSE("opcode", pair_dict)
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
 
-ZERO = ImplicitRegister("zero")
-RA = ImplicitRegister("ra")
-SP = ImplicitRegister("sp")
-T6 = ImplicitRegister("t6")
+ZERO = SpecificRegister(RegName.zero)
+RA = SpecificRegister(RegName.ra)
+SP = SpecificRegister(RegName.sp)
+T6 = SpecificRegister(RegName.t6)
 
 
 rd = Register("rd")
-rd_nz = Register("rd", 31)
+rd_nz = Register("rd", nonzero=True)
 rsd = Register("rsd")
-rsd_nz = Register("rsd", 31)
+rsd_nz = Register("rsd", nonzero=True)
 rs1 = Register("rs1")
 rs2 = Register("rs2")
 
@@ -624,7 +729,7 @@ rsd_3 = Register3("rsd")
 rs1_3 = Register3("rs1")
 rs2_3 = Register3("rs2")
 
-imm0 = Immediate(0, "0")
+imm0 = SpecificImmediate(name="0", value=0)
 imm1 = Immediate(1)
 imm2 = Immediate(2)
 imm3 = Immediate(3)
@@ -648,10 +753,7 @@ imm20 = Immediate(20)
 imm21 = Immediate(21)
 imm22 = Immediate(22)
 imm23 = Immediate(23)
-
-class REUSE(ImplicitRegister):
-    def __init__(self, src):
-        super().__init__(f"{{{src}}}")
+imm24 = Immediate(24)
 
 class InstructionSet:
     def __init__(self, name, instructions):
@@ -678,11 +780,20 @@ def dump(inset : InstructionSet):
     print()
 
 
-def first_line(inset : InstructionSet, line, verbose=False):
-    result = []
-    why = set()
+def light_parse(line):
     for pat,repl in unaliases.items():
         line = re.sub(pat, repl, line)
+    operands = filter(None, INSN_regex.match(line).groups())
+    opcode = next(operands)
+    operands = list(operands)
+    return opcode,operands
+
+
+INSN_regex = re.compile(r'.*\b(\w+)\s+(\w+)(?:,(?=-?\d+[(](\w+)[)])?(-?\w+))?(?:,(-?\w+))?(?:,(-?\w+))?(?:,(-?\w+))?', re.ASCII)
+def first_line(inset : InstructionSet, line, verbose=False):
+    opcode,operands = light_parse(line)
+    result = []
+    why = set()
 
     def printonce(*args, **kwargs):
         print(*args, **kwargs)
@@ -692,10 +803,13 @@ def first_line(inset : InstructionSet, line, verbose=False):
     no_matches = True
     for i in range(len(inset.instructions)):
         first = inset.instructions[i][0]
-        if (match := first.search(line)):
-            no_matches = False
-            opcode = match['opcode']
+        stage = f"row {i}, {first}"
+        second = None
+        try:
+            insn = first.parse(opcode, list(operands))
             second = inset.instructions[i][1]
+            stage += " ; " + str(second)
+            no_matches = False
             try:
                 opcode_count = first.opcode.choices.count(opcode)
             except AttributeError:
@@ -706,35 +820,38 @@ def first_line(inset : InstructionSet, line, verbose=False):
                 'signed': opcode not in unsigned_immediates,
                 'extrabits': (opcode_count - 1).bit_length(),
             }
-            if verbose: print(f"{hints=}")
-            try:
-                args = {}
-                for k, v in match.groupdict().items():
-                    if hasattr(first, k):
-                        args[k] = getattr(first, k).parse(v, hints=hints)
-                if verbose: print(f"Match: {first.name}, {prettydict(args)=}")
-                if (regex := second.re_cooked(args)):
-                    result.append((regex,i))
-                else:
-                    if verbose: print(f"second instruction rejected {match.groupdict()}")
-            except ValueError as e:
-                if 'range' in str(e): why.add('range')
-                why.add('value')
-                if verbose: print(next(header), f"parse failure on match {first.name}: {e}")
-            except KeyError as e:
-                why.add('construct')
-                print(next(header), f"construction error for {second.name}: {e}")
+            stage += f" {hints=}"
+            if (insn2 := second.specialise(insn, hints=hints)):
+                if verbose: print(f"{stage}, prepared: {insn2}")
+                result.append((insn2,i))
+            else:
+                if verbose: print(f"second instruction rejected {match.groupdict()}")
+        except ValueError as e:
+            if 'range' in str(e): why.add('range')
+            why.add('value')
+            if verbose: print(next(header), f"{stage}, value: {e}")
+        except KeyError as e:
+            why.add('key')
+            if verbose: print(next(header), f"{stage}, key: {e}")
+
     if no_matches:
-        why.add('nomatch')
+        why.add('nofirstmatch')
     return result, why
 
 
-def next_line(patterns, line):
-    for pattern,replace in unaliases.items():
-        line = re.sub(pattern, replace, line)
-    for pat in patterns:
-        if pat[0].search(line):
-            return pat
+def next_line(patterns, line, verbose=False):
+    opcode,operands = light_parse(line)
+
+    for template,i in patterns:
+        try:
+            if (insn := template.parse(opcode, operands)):
+                return insn,i
+        except ValueError as e:
+            if verbose: print(f"No match on {template} for: {opcode=}, {operands=}, val: {e}")
+            pass
+        except KeyError as e:
+            if verbose: print(f"No match on {template} for: {opcode=}, {operands=}, key: {e}")
+            pass
     return None
 
 
@@ -742,11 +859,11 @@ def try_pair(inset : InstructionSet, line0, line1):
     patterns,why = first_line(inset, line0, verbose=True)
     if why: print("  input1 problems:", why)
     for pat in patterns:
-        print('  pattern:', pat[0].pattern)
+        print(f"  pattern, row={pat[1]:2}: {pat[0]}")
 
     print("input0:", line0)
     print("input1:", line1)
-    pat = next_line(patterns, line1)
+    pat = next_line(patterns, line1, verbose=True)
     print("success" if pat else "failure")
     print()
 
@@ -859,7 +976,7 @@ my_attempt = InstructionSet("my_attempt", [
 
     ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
 
-    ( ldst(rd=rd, rs1=rs1, imm=imm10),          LDST(rd=REUSE("rd:next"), rs1=REUSE("rs1"), imm=REUSE("imm:next")), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm10),          LDST(rd=REUSE("rd", "n"), rs1=REUSE("rs1"), imm=REUSE("imm", "n")), ),
 
     ( ari3(rsd=rsd, rs_imm=rs_imm),             ldst(rd=rd, rs1=rs1, imm=imm0), ),
     ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm), ),
@@ -897,7 +1014,7 @@ attempt2 = InstructionSet("my second attempt", [
 
     ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
 
-    ( ldst(rd=rd, rs1=rs1, imm=imm5),           LDST(rd=rd, rs1=REUSE("rs1"), imm=REUSE("imm:next")), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm5),           LDST(rd=rd, rs1=REUSE("rs1"), imm=REUSE("imm", "n")), ),
 
     ( ari3(rsd=rsd, rs_imm=rs_imm),             ldst(rd=rd, rs1=rs1, imm=imm0), ),
     ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm), ),
@@ -909,14 +1026,15 @@ dump(rvc)
 dump(my_attempt)
 dump(attempt2)
 try_pair(attempt2, " slli a4,a1,48", " srli a4,a4,48")
+try_pair(attempt2, " add  a0,a1,a2", " add  a3,a4,a5")
 try_pair(attempt2, " ld a0,136(s1)", " lw a4,-1888(tp)")
 try_pair(attempt2, " mv a0,a1", " ret")
 try_pair(attempt2, " mv a2,123", " ret")
 try_pair(attempt2, " ld ra,152(sp)", " ld s0,144(sp)")
 try_pair(attempt2, "xor a5,a5,a4", "bnez a5,242")
 
-try_pair(attempt2, "mv   a0,s10", "`addi sp,sp,-16")
-try_pair(attempt2, "sd   s0,8(sp)", "`addi s0,sp,16")
+try_pair(attempt2, "mv   a0,s10", "addi sp,sp,-16")
+try_pair(attempt2, "sd   s0,8(sp)", "addi s0,sp,16")
 
 try_pair(attempt2, "max a3,a5,a4", "min a2,a5,a4")
 print('---------\n\n')

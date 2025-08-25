@@ -166,14 +166,15 @@ class ChoiceOf:
             self.count = 1 << self.bits
 
     def __str__(self):
+        if getattr(self, 'shift', 0) > 0:
+            if len(self.choices) > 1:
+                return f"{self.name}*{1<<self.shift}:{(len(self.choices) - 1).bit_length()}"
+            return f"{self.name}*{1<<self.shift}"
         if len(self.choices) > 1:
-            return self.name+':'+str((len(self.choices) - 1).bit_length())
+            return f"{self.name}:{(len(self.choices) - 1).bit_length()}"
         return self.name
 
     def __format__(self, spec):
-        if spec == 'next' or spec == 'n':
-            index = self.choices.index(self.name)
-            return "|".join(map(str, filter(None, (self - 1, self + 1))))
         return self.__str__().__format__(spec)
 
     def dup(self, *args, **kwargs):
@@ -194,6 +195,9 @@ class ChoiceOf:
 
 
 class Opcode(ChoiceOf):
+    def __init__(self, name, *, choices=(), roundoff=True, hints={}):
+        super().__init__(name, choices=choices, roundoff=roundoff)
+
     def __add__(self, other):
         return Opcode(
                 name="+".join((self.name, other.name)),
@@ -311,6 +315,17 @@ class Register3(Register):
         super().__init__(name, choices=Register3.choices)
 
 
+class Register4(Register):
+    choices = tuple(map(RegName, range(0,16)))
+    def __init__(self, name, **kwargs):
+        super().__init__(name, choices=Register4.choices, **kwargs)
+
+def bits_to_range(bits, signed=False, shift=0):
+    count = 1 << bits
+    start = -(count // 2) if signed else 0
+    k = 1 << shift
+    return range(start * k, (start + count) * k, k)
+
 class Immediate:
     shift = 0
 
@@ -320,20 +335,16 @@ class Immediate:
         self.bits = size
         self.count = 1 << size
         self.shift = hints.get('shift', DEFAULT_IMM_SHIFT)
+        self.signed = hints.get('signed', True)
         if choices:
             self.choices = choices
-        elif hints.get('signed', True):
-            self.choices = range(-1 << (self.bits - 1), 1 << (self.bits - 1))
         else:
-            self.choices = range(0, 1 << self.bits)
+            self.choices = bits_to_range(self.bits, signed=self.signed, shift=self.shift)
 
     def __str__(self):
         return self.name
+
     def __format__(self, spec):
-        if spec == 'next':
-            value = int(self.name)
-            k = 1 << self.shift
-            return (f"{value-k}|{value+k}")
         return self.__str__().__format__(spec)
 
     def __add__(self, other):
@@ -354,11 +365,12 @@ class Immediate:
 
     def parse(self, string, hints={}):
         value = int(string)
+        bits = self.bits + hints.get('extra_bits', 0)
         shift = hints.get('shift', self.shift)
-        if value & ((1 << shift) - 1) != 0:
-            raise ValueError(f"{value=} needs to be multiple of {1 << shift}")
-        if not (value >> shift) in self.choices:
-            raise ValueError(f"{value=} must be one of {self.choices=}")
+        signed = hints.get('signed', self.signed)
+        choices = bits_to_range(self.bits, signed=self.signed, shift=self.shift)
+        if value not in choices:
+            raise ValueError(f"{value=} not in {choices}")
         # TODO: ensure shift gets into result:
         return SpecificImmediate(name=string, value=value, hints=hints)
 
@@ -376,11 +388,12 @@ class RegImm(Register, Immediate):
         super().__init__(name, choices=choices)
         self.shift = hints.get('shift', self.shift)
         self.signed = hints.get('signed', True)
+        print(f"Made {self} with {self.shift=}")
 
     def parse(self, string, hints={}):
         try:
             return Register.parse(self, string, hints)
-        except ValueError:
+        except (ValueError,KeyError):
             pass
         return Immediate.parse(self, string, hints)
 
@@ -389,7 +402,7 @@ class REUSE(ChoiceOf):
     def __init__(self, src, mode=None):
         name = f"[[{src}]]"
         if isinstance(mode, dict):
-            name = f"[[d({src})]]"
+            name = f"[[dict({src})]]"
         elif isinstance(mode, str):
             name = f"[[{src}:{mode}]]"
         super().__init__(name)
@@ -403,11 +416,13 @@ class REUSE(ChoiceOf):
             choices = ()
             for v in src.choices:
                 choices += self.mode.get(v, ())
-            print(f"REUSE:dict {choices=}")
-            return src.dup(name=self.name, choices=choices)
-        if self.mode == "n":
-            choices = getattr(src - 1, 'choices', ()) + getattr(src + 1, 'choices', ())
-            return src.dup(name=self.name, choices=choices)
+            return src.dup(name=self.name, choices=choices, hints=hints)
+        choices = getattr(src, 'choices', src)
+        if self.mode == 'n':
+            choices = getattr(src - 1, 'choices') + getattr(src + 1, 'choices')
+        name = f"{{{','.join(map(str,choices))}}}"
+        result = src.dup(name=name, choices=choices, hints=hints)
+        return result
 
 
 def repack(kwargs):
@@ -474,30 +489,41 @@ class Instruction:
         operands = list(operands)
         # TODO: maybe look up values for hints here rather than externally?
         args = {}
-        if hasattr(self, 'rsd'):
-            rd = operands.pop(0)
-            rs1 = operands.pop(0)
-            args['rsd'] = self.rsd.parse(rd, hints=hints)
-            # Raise an error if rs1 doesn't match rd.
-            args['rsd'].parse(rs1, hints=hints)
-        else:
-            if hasattr(self, 'rd'):
-                args['rd'] = self.rd.parse(operands.pop(0), hints=hints)
-            if hasattr(self, 'rs1'):
-                args['rs1'] = self.rs1.parse(operands.pop(0), hints=hints)
-        if hasattr(self, 'rs_imm'):
-            tmp = self.rs_imm.parse(operands.pop(0), hints=hints)
-            if isinstance(tmp, Register):
-                args['rs2'] = tmp
+        step = "wut?"
+        try:
+            if hasattr(self, 'rsd'):
+                step = 'rsd'
+                rd = operands.pop(0)
+                rs1 = operands.pop(0)
+                args['rsd'] = self.rsd.parse(rd, hints=hints)
+                # Raise an error if rs1 doesn't match rd.
+                args['rsd'].parse(rs1, hints=hints)
             else:
-                args['imm'] = tmp
-        else:
-            if hasattr(self, 'rs2'):
-                args['rs2'] = self.rs2.parse(operands.pop(0), hints=hints)
-            if hasattr(self, 'imm'):
-                args['imm'] = self.imm.parse(operands.pop(0), hints=hints)
-        if operands:
-            raise ValueError(f"Too many operands: {operands}")
+                step = 'not rsd'
+                if hasattr(self, 'rd'):
+                    step = 'rd'
+                    args['rd'] = self.rd.parse(operands.pop(0), hints=hints)
+                if hasattr(self, 'rs1'):
+                    step = 'rs1'
+                    args['rs1'] = self.rs1.parse(operands.pop(0), hints=hints)
+            if hasattr(self, 'rs_imm'):
+                step = 'rs_imm'
+                tmp = self.rs_imm.parse(operands.pop(0), hints=hints)
+                if isinstance(tmp, Register):
+                    args['rs2'] = tmp
+                else:
+                    args['imm'] = tmp
+            else:
+                if hasattr(self, 'rs2'):
+                    step = 'rs2'
+                    args['rs2'] = self.rs2.parse(operands.pop(0), hints=hints)
+                if hasattr(self, 'imm'):
+                    step = 'imm'
+                    args['imm'] = self.imm.parse(operands.pop(0), hints=hints)
+            if operands:
+                raise ValueError(f"Too many operands: {operands}")
+        except Exception as e:
+            raise type(e)(f"parsing {step=} with {hints=}: {e}")
         return Instruction(opc, **args, hints=hints)
 
     def specialise(self, ref, hints={}):
@@ -508,9 +534,13 @@ class Instruction:
             if isinstance(v, REUSE):
                 alt = 'rsd' if v.src == 'rd' else 'nevermind'
                 replacement = getattr(ref, v.src, getattr(ref, alt, None))
-                # print(f"  setting {k} to {replacement}")
-                setattr(result, k, v.parse(replacement))
+                v = v.parse(replacement, hints=hints)
+                setattr(result, k, v)
                 result.name += "/" + k
+            else:
+                if hasattr(v, 'shift'):
+                    v.shift = hints.get('shift', v.shift)
+
         # print(f"Result of forwarding: {result}")
         return result
 
@@ -537,6 +567,16 @@ class Reserved(Instruction):
         self.fmt = message or "--reserved--"
 
 
+
+class ari2(Instruction):
+    opcode = Opcode("arith2", choices=(
+        "addi",     # imm-2
+        "add",
+        "sub",
+        "and",
+    ))
+    def __init__(self, **kwargs):
+        super().__init__(self.opcode, **kwargs)
 
 class ari3(Instruction):
     opcode = Opcode("arith3", choices=(
@@ -665,9 +705,9 @@ class ldst(Instruction):
 
 
 class LDST(ImplicitInstruction):
-    opcode = Opcode("{opcode}")
     fmt = ldst.fmt
     re = ldst.re
+    opcode = REUSE("opcode")
     def __init__(self, **kwargs):
         super().__init__(self.opcode, **kwargs)
 
@@ -717,11 +757,19 @@ T6 = SpecificRegister(RegName.t6)
 
 
 rd = Register("rd")
-rd_nz = Register("rd", nonzero=True)
+rd_nz = Register("rdnz", nonzero=True)
 rsd = Register("rsd")
-rsd_nz = Register("rsd", nonzero=True)
+rsd_nz = Register("rsdnz", nonzero=True)
 rs1 = Register("rs1")
 rs2 = Register("rs2")
+
+rd4 = Register4("rd")
+rd4_nz = Register4("rdnz", nonzero=True)
+rsd4 = Register4("rsd")
+rsd4_nz = Register4("rsdnz", nonzero=True)
+rs1_4 = Register4("rs1")
+rs2_4 = Register4("rs2")
+rs4_imm = RegImm("rs_imm", "rs2", "imm", choices=rsd4.choices)
 
 rs_imm = RegImm("rs_imm", "rs2", "imm")
 rd_3 = Register3("rd")
@@ -773,7 +821,7 @@ def dump(inset : InstructionSet):
             count *= op.count
             display.append(f"{op.bits:2}: {str(op):<30}")
 
-        print(f"{size:#10x}{count:+#11x}: {"  ".join(display)}  ({bits:2} bits)  {hits} hits")
+        print(f"{size:#11x}{count:+#11x}: {"  ".join(display)}  ({bits:2} bits)  {hits} hits")
         size += count
 
     print(f"total size: {size:#x},  bits: {(size - 1).bit_length()}")
@@ -976,7 +1024,7 @@ my_attempt = InstructionSet("my_attempt", [
 
     ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
 
-    ( ldst(rd=rd, rs1=rs1, imm=imm10),          LDST(rd=REUSE("rd", "n"), rs1=REUSE("rs1"), imm=REUSE("imm", "n")), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm10),          LDST(rd=REUSE("rd", 'n'), rs1=REUSE("rs1"), imm=REUSE("imm", 'n')), ),
 
     ( ari3(rsd=rsd, rs_imm=rs_imm),             ldst(rd=rd, rs1=rs1, imm=imm0), ),
     ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm), ),
@@ -1014,7 +1062,45 @@ attempt2 = InstructionSet("my second attempt", [
 
     ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
 
-    ( ldst(rd=rd, rs1=rs1, imm=imm5),           LDST(rd=rd, rs1=REUSE("rs1"), imm=REUSE("imm", "n")), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm5),           LDST(rd=rd, rs1=REUSE("rs1"), imm=REUSE("imm", 'n')), ),
+
+    ( ari3(rsd=rsd, rs_imm=rs_imm),             ldst(rd=rd, rs1=rs1, imm=imm0), ),
+    ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm), ),
+])
+
+attempt3 = InstructionSet("my third attempt", [
+    ( ari2(rd=rd4, rs1=rs1_4, rs_imm=rs4_imm),  ari2(rd=rd4, rs1=rs1_4, rs_imm=rs4_imm), ),
+    ( ari4(rd=T6, rs1=rs1, rs_imm=rs_imm),      ari4(rd=rd, rs1=T6, rs_imm=rs_imm), ),
+# share Rs2:
+    ( ari5i(rsd=rsd, imm=imm5),                 ari5i(rsd=rsd, imm=REUSE("imm")), ),
+    ( ari5r(rsd=rsd, rs2=rs2),                  ari5r(rsd=rsd, rs2=REUSE("rs2")), ),
+
+# forward Rd to Rs2
+    ( ari5i(rsd=rsd, imm=imm5),                 ari5r(rsd=rsd, rs2=REUSE("rd")), ),  # WUT?
+    ( ari5r(rsd=rsd, rs2=rs2),                  ari5r(rsd=rsd, rs2=REUSE("rd")), ),
+
+    ( ari4(rsd=rsd, rs_imm=rs_imm),             Instruction("beqz", rs1=REUSE("rd"), imm=imm11), ),
+    ( ari4(rsd=rsd, rs_imm=rs_imm),             Instruction("bnez", rs1=REUSE("rd"), imm=imm11), ),
+
+    ( cmp(rd=T6, rs1=rs1, imm=imm5),            Instruction("beqz", rs1=T6, imm=imm11), ),
+    ( cmp(rd=T6, rs1=rs1, imm=imm5),            Instruction("bnez", rs1=T6, imm=imm11), ),
+
+    ( ari4(rsd=rsd, rs_imm=rs_imm),             Instruction("j", imm=imm11), ),
+    ( ari4(rsd=rsd, rs_imm=rs_imm),             Instruction("jal", rd=RA, imm=imm11), ),
+
+    ( ari5(rsd=rsd, rs_imm=rs_imm),             Instruction("jr", rs2=rs2), ),
+    ( ari5(rsd=rsd, rs_imm=rs_imm),             Instruction("jalr", rd=RA, rs2=rs2), ),
+
+    ( ari5(rsd=rsd4, rs_imm=rs_imm),            Instruction("sw", rd=REUSE("rd"), rs1=SP, imm=imm8), ),
+    ( ari5(rsd=rsd4, rs_imm=rs_imm),            Instruction("sd", rd=REUSE("rd"), rs1=SP, imm=imm8), ),
+    ( Instruction("lw", rd=rd4, rs1=SP, imm=imm8), ari5(rsd=REUSE("rd"), rs_imm=rs_imm), ),
+    ( Instruction("ld", rd=rd4, rs1=SP, imm=imm8), ari5(rsd=REUSE("rd"), rs_imm=rs_imm), ),
+
+    ( Reserved(21), ),
+
+    ( pair(rd=rd, rs1=rs1, rs2=rs2),            PAIR(rd=rd, rs1=REUSE("rs1"), rs2=REUSE("rs2")), ),
+
+    ( ldst(rd=rd, rs1=rs1, imm=imm5),           LDST(rd=rd, rs1=REUSE("rs1"), imm=REUSE("imm", 'n')), ),
 
     ( ari3(rsd=rsd, rs_imm=rs_imm),             ldst(rd=rd, rs1=rs1, imm=imm0), ),
     ( ldst(rd=rd, rs1=rs1, imm=imm0),           ari3(rsd=rsd, rs_imm=rs_imm), ),
@@ -1022,26 +1108,43 @@ attempt2 = InstructionSet("my second attempt", [
 
 ## Do some stuff
 
+print('---------\n\n')
 dump(rvc)
 dump(my_attempt)
 dump(attempt2)
-try_pair(attempt2, " slli a4,a1,48", " srli a4,a4,48")
-try_pair(attempt2, " add  a0,a1,a2", " add  a3,a4,a5")
-try_pair(attempt2, " ld a0,136(s1)", " lw a4,-1888(tp)")
-try_pair(attempt2, " mv a0,a1", " ret")
-try_pair(attempt2, " mv a2,123", " ret")
-try_pair(attempt2, " ld ra,152(sp)", " ld s0,144(sp)")
-try_pair(attempt2, "xor a5,a5,a4", "bnez a5,242")
-
-try_pair(attempt2, "mv   a0,s10", "addi sp,sp,-16")
-try_pair(attempt2, "sd   s0,8(sp)", "addi s0,sp,16")
-
-try_pair(attempt2, "max a3,a5,a4", "min a2,a5,a4")
+dump(attempt3)
 print('---------\n\n')
 
-try:
-    compress(attempt2, "qemu-lite.txt")
-    compress(my_attempt, "qemu-lite.txt", quiet=True)
-except KeyboardInterrupt:
-    print("stopped by ^C")
+test_pairs = (
+    ("slli  a4,a1,48"       ,"srli  a4,a4,48"),
+    ("add   a0,a1,a2"       ,"add   a3,a4,a5"),
+    ("ld    a0,136(s1)"     ,"lw    a4,-1888(tp)"),
+    ("mv    a0,a1"          ,"ret"),
+    ("mv    a2,123"         ,"ret"),
+    ("ld    ra,152(sp)"     ,"ld    s0,144(sp)"),
+    ("xor   a5,a5,a4"       ,"bnez  a5,242"),
+
+    ("mv    a0,s10"         ,"addi  sp,sp,-16"),
+    ("sd    s0,8(sp)"       ,"addi  s0,sp,16"),
+
+    ("max   a3,a5,a4"       ,"min   a2,a5,a4"),
+    ("ld    a0,0(s1)"       ,"add   s1,s1,31"),
+    ("ld    a0,0(s1)"       ,"add   s1,s1,32"),
+    ("ld    a0,0(s1)"       ,"add   s1,s1,1024"),
+    ("lb    a0,0(s1)"       ,"add   s1,s1,31"),
+    ("lb    a0,0(s1)"       ,"add   s1,s1,32"),
+    ("ld    a0,0(s1)"       ,"add   s1,s1,1024"),
+)
+
+if True:
+    for left, right in test_pairs:
+        try_pair(attempt2, left, right)
+    print('---------\n\n')
+
+if True:
+    try:
+        compress(attempt2, "qemu-lite.txt")
+        compress(attempt3, "qemu-lite.txt", quiet=True)
+    except KeyboardInterrupt:
+        print("stopped by ^C")
 
